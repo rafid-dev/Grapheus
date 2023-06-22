@@ -505,6 +505,7 @@ int main(int argc, const char* argv[]) {
 
     if (argc > 2){
         if (std::string{argv[1]} == "--checkpoint"){
+            std::cout << "Loading from checkpoint (" << std::string{argv[2]} << ")" << std::endl;
             model.load_weights(std::string{argv[2]});
         }
     }
