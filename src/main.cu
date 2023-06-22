@@ -502,13 +502,6 @@ int main(int argc, const char* argv[]) {
 
     PerspectiveModel<768> model{};
 
-    if (argc > 2){
-        if (std::string{argv[1]} == "--checkpoint"){
-            std::cout << "Loading from checkpoint (" << std::string{argv[2]} << ")" << std::endl;
-            model.load_weights(std::string{argv[2]});
-        }
-    }
-
     model.train(loader, 1000, 1e8);
 
     loader.kill();
