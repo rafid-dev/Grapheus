@@ -438,7 +438,7 @@ struct PerspectiveModel : ChessModel {
         auto& target = m_loss->target;
 
 
-#pragma omp parallel for schedule(static, 4) num_threads(8)
+#pragma omp parallel for schedule(static, 64) num_threads(16)
         for (int b = 0; b < positions->header.entry_count; b++) {
             chess::Position* pos = &positions->positions[b];
             // fill in the inputs and target values
@@ -480,7 +480,7 @@ struct PerspectiveModel : ChessModel {
             float p_target = 1 / (1 + expf(-p_value * 2.5 / 400));
             float w_target = (w_value + 1) / 2.0f;
 
-            target(b)      = (p_target + w_target) / 2.0f;
+            target(b)      = (0.7f * p_target + 0.3f * w_target);
         }
     }
 };
