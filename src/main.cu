@@ -493,7 +493,7 @@ int main(int argc, const char* argv[]) {
 
     std::vector<std::string> files {};
 
-    for (auto& file : std::filesystem::recursive_directory_iterator(R"(/TrainingData/)")){
+    for (auto& file : std::filesystem::recursive_directory_iterator(R"(/workspace/alldata/)")){
         files.push_back(file.path().string());
     }
     
@@ -501,7 +501,6 @@ int main(int argc, const char* argv[]) {
     loader.start();
 
     PerspectiveModel<768> model{};
-
 
     if (argc > 2){
         if (std::string{argv[1]} == "--checkpoint"){
