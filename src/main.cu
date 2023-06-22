@@ -480,7 +480,7 @@ struct PerspectiveModel : ChessModel {
             float p_target = 1 / (1 + expf(-p_value * 2.5 / 400));
             float w_target = (w_value + 1) / 2.0f;
 
-            target(b)      = (0.7f * p_target + 0.3f * w_target);
+            target(b)      = (0.7f * p_target + 0.3f * w_target) / 1.0f;
         }
     }
 };
