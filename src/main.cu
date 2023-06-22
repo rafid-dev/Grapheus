@@ -341,7 +341,7 @@ struct KoiModel : ChessModel {
     }
 };
 
-template<int HIDDEN_NEURONS>
+template<int HIDDEN_NEURONS, int BUCKETS = 4>
 struct PerspectiveModel : ChessModel {
     static constexpr int THREADS = 16;    // threads to use on the cpu
 
@@ -349,15 +349,15 @@ struct PerspectiveModel : ChessModel {
     SparseInput*         in2;
 
     PerspectiveModel() : ChessModel() {
-        in1     = add<SparseInput>(12 * 64, 32);
-        in2     = add<SparseInput>(12 * 64, 32);
+        in1     = add<SparseInput>(12 * 64 * BUCKETS, 32);
+        in2     = add<SparseInput>(12 * 64 * BUCKETS, 32);
 
         auto ft = add<FeatureTransformer>(in1, in2, HIDDEN_NEURONS);
         auto re = add<ReLU>(ft);
         auto af = add<Affine>(re, 1);
         auto sm = add<Sigmoid>(af, 2.5 / 400);
 
-        set_loss(MPE {2.5, false});
+        set_loss(MPE {2, false});
         set_lr_schedule(StepDecayLRSchedule {0.01, 0.3, 100});
         add_optimizer(Adam({{OptimizerEntry {&ft->weights}},
                             {OptimizerEntry {&ft->bias}},
@@ -371,31 +371,31 @@ struct PerspectiveModel : ChessModel {
         add_quantization(Quantizer {
             "quant_1",
             10,
-            QuantizerEntry<int16_t>(&ft->weights.values, 255),
-            QuantizerEntry<int16_t>(&ft->bias.values   , 255),
-            QuantizerEntry<int16_t>(&af->weights.values, 64),
-            QuantizerEntry<int32_t>(&af->bias.values   , 255 * 64),
+            QuantizerEntry<int16_t>(&ft->weights.values, 32),
+            QuantizerEntry<int16_t>(&ft->bias.values   , 32),
+            QuantizerEntry<int16_t>(&af->weights.values, 128),
+            QuantizerEntry<int32_t>(&af->bias.values   , 32 * 128),
         });
         set_save_frequency(10);
     }
 
     inline int king_square_index(chess::Square relative_king_square) {
 
-//        // clang-format off
-//        constexpr int indices[chess::N_SQUARES] {
-//            0,  1,  2,  3,  3,  2,  1,  0,
-//            4,  5,  6,  7,  7,  6,  5,  4,
-//            8,  9,  10, 11, 11, 10, 9,  8,
-//            8,  9,  10, 11, 11, 10, 9,  8,
-//            12, 12, 13, 13, 13, 13, 12, 12,
-//            12, 12, 13, 13, 13, 13, 12, 12,
-//            14, 14, 15, 15, 15, 15, 14, 14,
-//            14, 14, 15, 15, 15, 15, 14, 14,
-//        };
-//        // clang-format on
-//
-//        return indices[relative_king_square];
-        return 0;
+       // clang-format off
+       constexpr int indices[chess::N_SQUARES] {
+            0, 0, 1, 1, 1, 1, 0, 0,
+            0, 0, 1, 1, 1, 1, 0, 0,
+            0, 0, 1, 1, 1, 1, 0, 0,
+            0, 0, 1, 1, 1, 1, 0, 0,
+            2, 2, 3, 3, 3, 3, 2, 2,
+            2, 2, 3, 3, 3, 3, 2, 2,
+            2, 2, 3, 3, 3, 3, 2, 2,
+            2, 2, 3, 3, 3, 3, 2, 2,
+       };
+       // clang-format on
+
+       return indices[relative_king_square];
+        // return 0;
     }
 
     inline int index(chess::Square piece_square,
@@ -493,19 +493,16 @@ int main(int argc, const char* argv[]) {
 
     std::vector<std::string> files {};
 
-    for (auto& file : std::filesystem::recursive_directory_iterator(R"(/workspace/Shuffled/)")){
+    for (auto& file : std::filesystem::recursive_directory_iterator(R"(/TrainingData/)")){
         files.push_back(file.path().string());
     }
     
     dataset::BatchLoader<chess::Position> loader {files, 16384};
     loader.start();
 
-    PerspectiveModel<512> model{};
+    PerspectiveModel<768> model{};
 
-    model.load_weights("../res/test/weights/440.state");
-    model.quantize();
-
-    // model.train(loader, 1000, 1e8);
+    model.train(loader, 1000, 1e8);
 
     loader.kill();
 
