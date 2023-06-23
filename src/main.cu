@@ -367,7 +367,7 @@ struct RiceModel : ChessModel {
                            0.999,
                            1e-8));
 
-        set_file_output("../test/output/");
+        set_file_output("../newtest/output/");
         add_quantization(Quantizer {
             "quant_1",
             10,
