@@ -341,7 +341,7 @@ struct KoiModel : ChessModel {
     }
 };
 
-template<int HIDDEN_NEURONS, int BUCKETS = 4>
+template<int HIDDEN_NEURONS, int BUCKETS = 16>
 struct RiceModel : ChessModel {
     static constexpr int THREADS = 16;    // threads to use on the cpu
 
@@ -383,15 +383,15 @@ struct RiceModel : ChessModel {
 
        // clang-format off
        constexpr int indices[chess::N_SQUARES] {
-            0, 0, 1, 1, 1, 1, 0, 0,
-            0, 0, 1, 1, 1, 1, 0, 0,
-            0, 0, 1, 1, 1, 1, 0, 0,
-            0, 0, 1, 1, 1, 1, 0, 0,
-            2, 2, 3, 3, 3, 3, 2, 2,
-            2, 2, 3, 3, 3, 3, 2, 2,
-            2, 2, 3, 3, 3, 3, 2, 2,
-            2, 2, 3, 3, 3, 3, 2, 2,
-       };
+            0,  1,  2,  3,  3,  2,  1,  0,
+            4,  5,  6,  7,  7,  6,  5,  4,
+            8,  9,  10, 11, 11, 10, 9,  8,
+            8,  9,  10, 11, 11, 10, 9,  8,
+            12, 12, 13, 13, 13, 13, 12, 12,
+            12, 12, 13, 13, 13, 13, 12, 12,
+            14, 14, 15, 15, 15, 15, 14, 14,
+            14, 14, 15, 15, 15, 15, 14, 14,
+        };
        // clang-format on
 
        return indices[relative_king_square];
@@ -500,7 +500,7 @@ int main(int argc, const char* argv[]) {
     dataset::BatchLoader<chess::Position> loader {files, 16384};
     loader.start();
 
-    RiceModel<768> model{};
+    RiceModel<512> model{};
 
     model.train(loader, 1000, 1e8);
 
