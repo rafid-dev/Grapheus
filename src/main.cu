@@ -342,13 +342,13 @@ struct KoiModel : ChessModel {
 };
 
 template<int HIDDEN_NEURONS, int BUCKETS = 4>
-struct PerspectiveModel : ChessModel {
+struct RiceModel : ChessModel {
     static constexpr int THREADS = 16;    // threads to use on the cpu
 
     SparseInput*         in1;
     SparseInput*         in2;
 
-    PerspectiveModel() : ChessModel() {
+    RiceModel() : ChessModel() {
         in1     = add<SparseInput>(12 * 64 * BUCKETS, 32);
         in2     = add<SparseInput>(12 * 64 * BUCKETS, 32);
 
@@ -480,7 +480,7 @@ struct PerspectiveModel : ChessModel {
             float p_target = 1 / (1 + expf(-p_value * 2.5 / 400));
             float w_target = (w_value + 1) / 2.0f;
 
-            target(b)      = (p_target + w_target) / 2.0f;
+            target(b)      = (0.6f * p_target + 0.4f * w_target) / 1.0f;
         }
     }
 };
@@ -493,14 +493,14 @@ int main(int argc, const char* argv[]) {
 
     std::vector<std::string> files {};
 
-    for (auto& file : std::filesystem::recursive_directory_iterator(R"(/workspace/alldata/)")){
+    for (auto& file : std::filesystem::recursive_directory_iterator(R"(/workspace/shuffled/)")){
         files.push_back(file.path().string());
     }
     
     dataset::BatchLoader<chess::Position> loader {files, 16384};
     loader.start();
 
-    KoiModel model{};
+    RiceModel<768> model{};
 
     model.train(loader, 1000, 1e8);
 
