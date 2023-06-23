@@ -358,7 +358,7 @@ struct RiceModel : ChessModel {
         auto sm = add<Sigmoid>(af, 2.5 / 400);
 
         set_loss(MPE {2, false});
-        set_lr_schedule(StepDecayLRSchedule {0.01, 0.5, 60});
+        set_lr_schedule(StepDecayLRSchedule {0.01, 0.03, 100});
         add_optimizer(Adam({{OptimizerEntry {&ft->weights}},
                             {OptimizerEntry {&ft->bias}},
                             {OptimizerEntry {&af->weights}},
