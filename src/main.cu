@@ -341,7 +341,7 @@ struct KoiModel : ChessModel {
     }
 };
 
-template<int HIDDEN_NEURONS, int BUCKETS = 16>
+template<int HIDDEN_NEURONS, int BUCKETS = 4>
 struct RiceModel : ChessModel {
     static constexpr int THREADS = 16;    // threads to use on the cpu
 
@@ -383,14 +383,14 @@ struct RiceModel : ChessModel {
 
        // clang-format off
        constexpr int indices[chess::N_SQUARES] {
-            0,  1,  2,  3,  3,  2,  1,  0,
-            4,  5,  6,  7,  7,  6,  5,  4,
-            8,  9,  10, 11, 11, 10, 9,  8,
-            8,  9,  10, 11, 11, 10, 9,  8,
-            12, 12, 13, 13, 13, 13, 12, 12,
-            12, 12, 13, 13, 13, 13, 12, 12,
-            14, 14, 15, 15, 15, 15, 14, 14,
-            14, 14, 15, 15, 15, 15, 14, 14,
+                0, 0, 1, 1, 1, 1, 0, 0,
+                0, 0, 1, 1, 1, 1, 0, 0,
+                0, 0, 1, 1, 1, 1, 0, 0,
+                0, 0, 1, 1, 1, 1, 0, 0,
+                2, 2, 3, 3, 3, 3, 2, 2,
+                2, 2, 3, 3, 3, 3, 2, 2,
+                2, 2, 3, 3, 3, 3, 2, 2,
+                2, 2, 3, 3, 3, 3, 2, 2,
         };
        // clang-format on
 
@@ -493,16 +493,16 @@ int main(int argc, const char* argv[]) {
 
     std::vector<std::string> files {};
 
-    for (auto& file : std::filesystem::recursive_directory_iterator(R"(/workspace/shuffled/)")){
+    for (auto& file : std::filesystem::recursive_directory_iterator(R"(/workspace/shuffled2/)")){
         files.push_back(file.path().string());
     }
     
     dataset::BatchLoader<chess::Position> loader {files, 16384};
     loader.start();
 
-    RiceModel<512> model{};
+    RiceModel<768> model{};
 
-    model.train(loader, 1000, 1e8);
+    model.train(loader, 550, 1e8);
 
     loader.kill();
 
