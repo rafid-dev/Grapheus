@@ -294,146 +294,7 @@ struct RiceModel : ChessModel {
         auto& target = m_loss->target;
 
 
-#pragma omp parallel for schedule(static, 64) num_threads(6)
-        for (int b = 0; b < positions->header.entry_count; b++) {
-            chess::Position* pos = &positions->positions[b];
-            // fill in the inputs and target values
-
-            chess::Square wKingSq = pos->get_king_square<chess::WHITE>();
-            chess::Square bKingSq = pos->get_king_square<chess::BLACK>();
-
-            chess::BB     bb {pos->m_occupancy};
-            int           idx = 0;
-
-            while (bb) {
-                chess::Square sq                    = chess::lsb(bb);
-                chess::Piece  pc                    = pos->m_pieces.get_piece(idx);
-
-                auto          piece_index_white_pov = index(sq, pc, wKingSq, chess::WHITE);
-                auto          piece_index_black_pov = index(sq, pc, bKingSq, chess::BLACK);
-
-                if (pos->m_meta.stm() == chess::WHITE) {
-                    in1->sparse_output.set(b, piece_index_white_pov);
-                    in2->sparse_output.set(b, piece_index_black_pov);
-                } else {
-                    in2->sparse_output.set(b, piece_index_white_pov);
-                    in1->sparse_output.set(b, piece_index_black_pov);
-                }
-
-                bb = chess::lsb_reset(bb);
-                idx++;
-            }
-
-            float p_value = pos->m_result.score;
-            float w_value = pos->m_result.wdl;
-
-            // flip if black is to move -> relative network style
-            if (pos->m_meta.stm() == chess::BLACK) {
-                p_value = -p_value;
-                w_value = -w_value;
-            }
-
-            float p_target = 1 / (1 + expf(-p_value * 2.5 / 400));
-            float w_target = (w_value + 1) / 2.0f;
-
-            float actual_lambda = start_lambda + (end_lambda - start_lambda) * (current_epoch / max_epochs);
-
-            target(b)      = (actual_lambda * p_target + (1.0f - actual_lambda) * w_target) / 1.0f;
-        }
-    }
-};
-
-template<int N_BUCKETS, int HIDDEN_NEURONS, int HIDDEN_NEURONS_2>
-struct TwoLayerNN : ChessModel {
-    static constexpr int THREADS = 16;    // threads to use on the cpu
-
-    SparseInput*         in1;
-    SparseInput*         in2;
-
-    const std::array<int, 64>& indices;
-
-    TwoLayerNN(const std::array<int, 64>& KingBuckets, const std::string& FILE_OUTPUT) : ChessModel() , indices{KingBuckets}{
-        in1     = add<SparseInput>(12 * 64 * N_BUCKETS, 32);
-        in2     = add<SparseInput>(12 * 64 * N_BUCKETS, 32);
-
-        auto ft = add<FeatureTransformer>(in1, in2, HIDDEN_NEURONS);
-        auto re = add<ReLU>(ft);
-        auto af = add<Affine>(re, HIDDEN_NEURONS_2);
-        auto re2 = add<ReLU>(af);
-        auto af2 = add<Affine>(re2, 1);
-        auto sm = add<Sigmoid>(af2, 2.5/400);
-
-        set_loss(MPE {2, false});
-        set_lr_schedule(StepDecayLRSchedule {0.01, 0.03, 100});
-        add_optimizer(Adam({{OptimizerEntry {&ft->weights}},
-                            {OptimizerEntry {&ft->bias}},
-                            {OptimizerEntry {&af->weights}},
-                            {OptimizerEntry {&af->bias}},
-                            {OptimizerEntry {&af2->weights}},
-                            {OptimizerEntry {&af2->bias}}},
-                           0.9,
-                           0.999,
-                           1e-8));
-
-        set_file_output(FILE_OUTPUT);
-        add_quantization(Quantizer {
-            "quant_1",
-            10,
-            QuantizerEntry<int16_t>(&ft->weights.values, 32, true),
-            QuantizerEntry<int16_t>(&ft->bias.values   , 32),
-            QuantizerEntry<int16_t>(&af->weights.values, 128),
-            QuantizerEntry<int16_t>(&af->bias.values   , 128),
-            QuantizerEntry<int16_t>(&af2->weights.values, 32),
-            QuantizerEntry<int32_t>(&af2->bias.values   , 32 * 128),
-        });
-        set_save_frequency(10);
-    }
-
-    inline int king_square_index(chess::Square relative_king_square) {
-        return indices[relative_king_square];
-    }
-
-    inline int index(chess::Square piece_square,
-                     chess::Piece  piece,
-                     chess::Square king_square,
-                     chess::Color  view) {
-        constexpr int          PIECE_TYPE_FACTOR  = 64;
-        constexpr int          PIECE_COLOR_FACTOR = PIECE_TYPE_FACTOR * 6;
-        constexpr int          KING_SQUARE_FACTOR = PIECE_COLOR_FACTOR * 2;
-
-        const chess::PieceType piece_type         = chess::type_of(piece);
-        const chess::Color     piece_color        = chess::color_of(piece);
-
-        chess::Square          relative_king_square;
-        chess::Square          relative_piece_square;
-
-        if (view == chess::WHITE) {
-            relative_king_square  = king_square;
-            relative_piece_square = piece_square;
-        } else {
-            relative_king_square  = chess::mirror_ver(king_square);
-            relative_piece_square = chess::mirror_ver(piece_square);
-        }
-
-        const int king_square_idx = king_square_index(relative_king_square);
-        if (chess::file_index(king_square) > 3) {
-            relative_piece_square = chess::mirror_hor(relative_piece_square);
-        }
-
-        const int index = relative_piece_square + piece_type * PIECE_TYPE_FACTOR
-                          + (piece_color == view) * PIECE_COLOR_FACTOR
-                          + king_square_idx * KING_SQUARE_FACTOR;
-        return index;
-    }
-
-    void setup_inputs_and_outputs(dataset::DataSet<chess::Position>* positions) {
-        in1->sparse_output.clear();
-        in2->sparse_output.clear();
-
-        auto& target = m_loss->target;
-
-
-#pragma omp parallel for schedule(static, 64) num_threads(6)
+#pragma omp parallel for schedule(static, 64) num_threads(16)
         for (int b = 0; b < positions->header.entry_count; b++) {
             chess::Position* pos = &positions->positions[b];
             // fill in the inputs and target values
@@ -505,7 +366,7 @@ constexpr std::array<int, chess::N_SQUARES> HalfKA_hm_Indices {
 };
 
 constexpr std::array<int, chess::N_SQUARES> HalfKA_Indices {
-    0, 1, 2, 3, 4, 5, 6, 7,
+        0, 1, 2, 3, 4, 5, 6, 7,
     8, 9, 10, 11, 12, 13, 14, 15,
     16, 17, 18, 19, 20, 21, 22, 23,
     24, 25, 26, 27, 28, 29, 30, 31,
