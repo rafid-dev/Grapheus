@@ -22,7 +22,8 @@ struct ChessModel : nn::Model {
     int max_epochs = 0;
     int current_epoch = 0;
 
-    float eval_ratio = 0.7;
+    float start_lambda = 1.0;
+    float end_lambda = 0.6;
 
     // seting inputs
     virtual void setup_inputs_and_outputs(dataset::DataSet<chess::Position>* positions) = 0;
@@ -30,9 +31,10 @@ struct ChessModel : nn::Model {
     // train function
     void train(dataset::BatchLoader<chess::Position>& loader,
                int                                    epochs     = 1000,
-               int                                    epoch_size = 1e7, float eval_ratio = 0.7, int epoch_continuation = 0)  {
+               int                                    epoch_size = 1e7, float start_lambda = 1.0, float end_lambda = 0.6, int epoch_continuation = 0)  {
         this->max_epochs = epochs;
-        this->eval_ratio = eval_ratio;
+        this->start_lambda = start_lambda;
+        this->end_lambda = end_lambda;
         this->compile(loader.batch_size);
 
         Timer t {};
@@ -227,7 +229,7 @@ struct RiceModel : ChessModel {
         auto sm = add<Sigmoid>(af, 2.5 / 400);
 
         set_loss(MPE {2, false});
-        set_lr_schedule(StepDecayLRSchedule {0.01, 0.03, 100});
+        set_lr_schedule(StepDecayLRSchedule {0.01, 0.3, 100});
         add_optimizer(Adam({{OptimizerEntry {&ft->weights}},
                             {OptimizerEntry {&ft->bias}},
                             {OptimizerEntry {&af->weights}},
@@ -292,7 +294,7 @@ struct RiceModel : ChessModel {
         auto& target = m_loss->target;
 
 
-#pragma omp parallel for schedule(static, 64) num_threads(16)
+#pragma omp parallel for schedule(static, 64) num_threads(6)
         for (int b = 0; b < positions->header.entry_count; b++) {
             chess::Position* pos = &positions->positions[b];
             // fill in the inputs and target values
@@ -334,7 +336,9 @@ struct RiceModel : ChessModel {
             float p_target = 1 / (1 + expf(-p_value * 2.5 / 400));
             float w_target = (w_value + 1) / 2.0f;
 
-            target(b)      = (eval_ratio * p_target + (1.0f - eval_ratio) * w_target) / 1.0f;
+            float actual_lambda = start_lambda + (end_lambda - start_lambda) * (current_epoch / max_epochs);
+
+            target(b)      = (actual_lambda * p_target + (1.0f - actual_lambda) * w_target) / 1.0f;
         }
     }
 };
@@ -351,10 +355,10 @@ constexpr std::array<int, chess::N_SQUARES> HalfKA_qm_Indices {
 };
 
 constexpr std::array<int, chess::N_SQUARES> HalfKA_hm_Indices {
-     0,  1,  2,  3,  3,  2,  1,  0,
-     4,  5,  6,  7,  7,  6,  5,  4,
-     8,  9,  10, 11, 11, 10, 9,  8,
-    12, 13, 14, 15, 15, 14, 13, 12,
+    0,  1,  2,  3,  3,  2,  1,  0,
+    4,  5,  6,  7,  7,  6,  5,  4,
+    8,  9,  10, 11, 11, 10, 9,  8,
+    12,  13, 14, 15, 15, 14, 13, 12,
     16, 17, 18, 19, 19, 18, 17, 16,
     20, 21, 22, 23, 23, 22, 21, 20,
     24, 25, 26, 27, 27, 26, 25, 24,
@@ -362,7 +366,7 @@ constexpr std::array<int, chess::N_SQUARES> HalfKA_hm_Indices {
 };
 
 constexpr std::array<int, chess::N_SQUARES> HalfKA_Indices {
-        0, 1, 2, 3, 4, 5, 6, 7,
+    0, 1, 2, 3, 4, 5, 6, 7,
     8, 9, 10, 11, 12, 13, 14, 15,
     16, 17, 18, 19, 20, 21, 22, 23,
     24, 25, 26, 27, 28, 29, 30, 31,
@@ -378,12 +382,12 @@ int main(int argc, const char* argv[]) {
 #else
     // train(dataset::BatchLoader<chess::Position>& loader,
     //               int epochs     = 1000,
-    //               int epoch_size = 1e8, float eval_ratio, int epoch_continuation = 0
+    //               int epoch_size = 1e8, float start_lambda = 1.0, float end_lambda = 0.6, int epoch_continuation = 0
     init();
 
     std::vector<std::string> files {};
 
-    for (auto& file : std::filesystem::recursive_directory_iterator(R"(/workspace/TrainingData/)")){
+    for (auto& file : std::filesystem::recursive_directory_iterator(R"(/media/rafid/Resources/Projects/TrainingData/lc0dataconverter/files)")){
         files.push_back(file.path().string());
     }
 
@@ -391,8 +395,10 @@ int main(int argc, const char* argv[]) {
     loader.start();
 
     RiceModel<32, 512> HalfKA_hm{HalfKA_hm_Indices, std::string{"../result/Aethex_higherlambda/"}};
+    RiceModel<32, 512> HalfKA_hm2{HalfKA_hm_Indices, std::string{"../result/Aethex_nolambda/"}};
 
-    HalfKA_hm.train(loader, 500, 1e8, 0.7);
+    HalfKA_hm.train(loader, 550, 1e8, 1.0, 0.7);
+    HalfKA_hm2.train(loader, 550, 1e8, 0.7, 0.7);
 
     loader.kill();
 
