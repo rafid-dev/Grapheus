@@ -7,6 +7,11 @@
 #include <intrin.h>
 #endif
 
+#if defined(_MSC_VER) && (defined(_M_X64) || defined(_M_IX86))
+#include <intrin.h>
+#pragma intrinsic(__popcnt64) // For MSVC, this ensures the intrinsic is available.
+#endif
+
 namespace chess{
 
 /**

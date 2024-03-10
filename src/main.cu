@@ -4,26 +4,17 @@
 #include "dataset/dataset.h"
 #include "dataset/io.h"
 #include "dataset/process.h"
-#include "dataset/utils.h"
 #include "misc/csv.h"
 #include "misc/timer.h"
 #include "nn/nn.h"
 #include "operations/operations.h"
 
 #include <fstream>
-#include <filesystem>
-#include <omp.h>
 
 using namespace nn;
 using namespace data;
 
 struct ChessModel : nn::Model {
-
-    int max_epochs = 0;
-    int current_epoch = 0;
-
-    float start_lambda = 1.0;
-    float end_lambda = 0.6;
 
     // seting inputs
     virtual void setup_inputs_and_outputs(dataset::DataSet<chess::Position>* positions) = 0;
@@ -31,15 +22,11 @@ struct ChessModel : nn::Model {
     // train function
     void train(dataset::BatchLoader<chess::Position>& loader,
                int                                    epochs     = 1000,
-               int                                    epoch_size = 1e7, float start_lambda = 1.0, float end_lambda = 0.6, int epoch_continuation = 0)  {
-        this->max_epochs = epochs;
-        this->start_lambda = start_lambda;
-        this->end_lambda = end_lambda;
+               int                                    epoch_size = 1e7) {
         this->compile(loader.batch_size);
 
         Timer t {};
-        for (int i = epoch_continuation; i < epochs; i++) {
-            this->current_epoch = i;
+        for (int i = 0; i < epochs; i++) {
             t.start();
             size_t prev_duration = 0;
             float  batch_loss    = 0;
@@ -210,25 +197,22 @@ struct ChessModel : nn::Model {
     }
 };
 
-template<int N_BUCKETS, int HIDDEN_NEURONS>
-struct RiceModel : ChessModel {
+struct KoiModel : ChessModel {
     static constexpr int THREADS = 16;    // threads to use on the cpu
 
     SparseInput*         in1;
     SparseInput*         in2;
 
-    const std::array<int, 64>& indices;
+    KoiModel() : ChessModel() {
+        in1     = add<SparseInput>(16 * 12 * 64, 32);
+        in2     = add<SparseInput>(16 * 12 * 64, 32);
 
-    RiceModel(const std::array<int, 64>& KingBuckets, const std::string& FILE_OUTPUT) : ChessModel() , indices{KingBuckets}{
-        in1     = add<SparseInput>(12 * 64 * N_BUCKETS, 32);
-        in2     = add<SparseInput>(12 * 64 * N_BUCKETS, 32);
-
-        auto ft = add<FeatureTransformer>(in1, in2, HIDDEN_NEURONS);
+        auto ft = add<FeatureTransformer>(in1, in2, 512);
         auto re = add<ReLU>(ft);
         auto af = add<Affine>(re, 1);
         auto sm = add<Sigmoid>(af, 2.5 / 400);
 
-        set_loss(MPE {2, false});
+        set_loss(MPE {2.5, false});
         set_lr_schedule(StepDecayLRSchedule {0.01, 0.3, 100});
         add_optimizer(Adam({{OptimizerEntry {&ft->weights}},
                             {OptimizerEntry {&ft->bias}},
@@ -238,19 +222,33 @@ struct RiceModel : ChessModel {
                            0.999,
                            1e-8));
 
-        set_file_output(FILE_OUTPUT);
+        set_file_output("../res/test/");
         add_quantization(Quantizer {
             "quant_1",
             10,
             QuantizerEntry<int16_t>(&ft->weights.values, 32, true),
             QuantizerEntry<int16_t>(&ft->bias.values   , 32),
             QuantizerEntry<int16_t>(&af->weights.values, 128),
-            QuantizerEntry<int32_t>(&af->bias.values   , 32 * 128),
+            QuantizerEntry<int32_t>(&af->bias.values   , 128 * 32),
         });
         set_save_frequency(10);
     }
 
     inline int king_square_index(chess::Square relative_king_square) {
+
+        // clang-format off
+        constexpr int indices[chess::N_SQUARES] {
+            0,  1,  2,  3,  3,  2,  1,  0,
+            4,  5,  6,  7,  7,  6,  5,  4,
+            8,  9,  10, 11, 11, 10, 9,  8,
+            8,  9,  10, 11, 11, 10, 9,  8,
+            12, 12, 13, 13, 13, 13, 12, 12,
+            12, 12, 13, 13, 13, 13, 12, 12,
+            14, 14, 15, 15, 15, 15, 14, 14,
+            14, 14, 15, 15, 15, 15, 14, 14,
+        };
+        // clang-format on
+
         return indices[relative_king_square];
     }
 
@@ -293,8 +291,7 @@ struct RiceModel : ChessModel {
 
         auto& target = m_loss->target;
 
-
-#pragma omp parallel for schedule(static, 64) num_threads(6)
+#pragma omp parallel for schedule(static) num_threads(16)
         for (int b = 0; b < positions->header.entry_count; b++) {
             chess::Position* pos = &positions->positions[b];
             // fill in the inputs and target values
@@ -336,73 +333,77 @@ struct RiceModel : ChessModel {
             float p_target = 1 / (1 + expf(-p_value * 2.5 / 400));
             float w_target = (w_value + 1) / 2.0f;
 
-            float actual_lambda = start_lambda + (end_lambda - start_lambda) * (current_epoch / max_epochs);
-
-            target(b)      = (actual_lambda * p_target + (1.0f - actual_lambda) * w_target) / 1.0f;
+            target(b)      = (p_target + w_target) / 2.0f;
         }
     }
 };
 
-constexpr std::array<int, chess::N_SQUARES> HalfKA_qm_Indices {
-    0,  1,  2,  3,  3,  2,  1,  0,
-    4,  5,  6,  7,  7,  6,  5,  4,
-    8,  9,  10, 11, 11, 10, 9,  8,
-    8,  9,  10, 11, 11, 10, 9,  8,
-    12, 12, 13, 13, 13, 13, 12, 12,
-    12, 12, 13, 13, 13, 13, 12, 12,
-    14, 14, 15, 15, 15, 15, 14, 14,
-    14, 14, 15, 15, 15, 15, 14, 14,
-};
-
-constexpr std::array<int, chess::N_SQUARES> HalfKA_hm_Indices {
-    0,  1,  2,  3,  3,  2,  1,  0,
-    4,  5,  6,  7,  7,  6,  5,  4,
-    8,  9,  10, 11, 11, 10, 9,  8,
-    12,  13, 14, 15, 15, 14, 13, 12,
-    16, 17, 18, 19, 19, 18, 17, 16,
-    20, 21, 22, 23, 23, 22, 21, 20,
-    24, 25, 26, 27, 27, 26, 25, 24,
-    28, 29, 30, 31, 31, 30, 29, 28,
-};
-
-constexpr std::array<int, chess::N_SQUARES> HalfKA_Indices {
-    0, 1, 2, 3, 4, 5, 6, 7,
-    8, 9, 10, 11, 12, 13, 14, 15,
-    16, 17, 18, 19, 20, 21, 22, 23,
-    24, 25, 26, 27, 28, 29, 30, 31,
-    32, 33, 34, 35, 36, 37, 38, 39,
-    40, 41, 42, 43, 44, 45, 46, 47,
-    48, 49, 50, 51, 52, 53, 54, 55,
-    56, 57, 58, 59, 60, 61, 62, 63,
-};
-
-int main(int argc, const char* argv[]) {
-#ifdef UTILITIES
-    dataset::start_utils(argc, argv);
-#else
-    // train(dataset::BatchLoader<chess::Position>& loader,
-    //               int epochs     = 1000,
-    //               int epoch_size = 1e8, float start_lambda = 1.0, float end_lambda = 0.6, int epoch_continuation = 0
+int main() {
     init();
 
-    std::vector<std::string> files {};
+    DenseInput inp{8};
+    ChunkwiseMul m{&inp, 4};
 
-    for (auto& file : std::filesystem::recursive_directory_iterator(R"(/media/rafid/Resources/Projects/TrainingData/lc0dataconverter/files)")){
-        files.push_back(file.path().string());
-    }
+    inp.compile(8);
+    m  .compile(8);
 
-    dataset::BatchLoader<chess::Position> loader {files, 16384};
-    loader.start();
+    math::uniform(inp.dense_output.values, 0.f, 1.f);
 
-    RiceModel<32, 512> HalfKA_hm{HalfKA_hm_Indices, std::string{"../result/Aethex_higherlambda/"}};
-    RiceModel<32, 512> HalfKA_hm2{HalfKA_hm_Indices, std::string{"../result/Aethex_nolambda/"}};
+    inp.dense_output.values >> GPU;
+    inp.forward();
+    m.forward();
 
-    HalfKA_hm.train(loader, 550, 1e8, 1.0, 0.7);
-    HalfKA_hm2.train(loader, 550, 1e8, 0.7, 0.7);
+    m.dense_output.values >> CPU;
 
-    loader.kill();
+    std::cout << inp.dense_output.values << std::endl;
+    std::cout << m  .dense_output.values << std::endl;
 
+//    init();
+//    std::vector<std::string> files {};
+//
+//    for (int i = 1; i <= 32; i++) {
+//        files.push_back(R"(D:\Koivisto Resourcen\Training Data Shuffled + Berserk\koi_ber_)"
+//                        + std::to_string(i) + ".bin");
+//    }
+//    dataset::BatchLoader<chess::Position> loader {files, 16384};
+//    loader.start();
+//
+//    KoiModel model {};
+//    model.load_weights("../res/run4/weights/680.state");
+////    model.quantize("680_32_128.net");
+////    model.load_weights(R"(F:\OneDrive\ProgrammSpeicher\CLionProjects\CudAD\resources\runs\experiment_37\weights-epoch1000.nnue)");
+////    model.train(loader, 1000, 1e8);
+//    model.distribution(loader, 32);
+
+//    model.test_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+//    model.compile(16384);
+//    model.setup_inputs_and_outputs(loader.next());
+//    model.batch();
+//    std::cout << model.loss_of_last_batch() << std::endl;
+
+
+
+//    model.load_weights("../res/run1/weights/test.state");
+//    model.test_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+//    model.train(loader, 1000, 1e8);
+//    model.load_weights("../res/run2/weights/1000.state");
+//    model.distribution(loader);
+//    model.quantize("final_16_256.net");
+
+//    model.test_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+//    model.save_weights("../res/run1/weights/test.state");
+
+//    model.compile(1);
+//    model.load_weights(R"(C:\Users\Luecx\CLionProjects\Grapheus\res\run1\weights\300.state)");
+//    model.test_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+//
+//    model.load_weights(R"(C:\Users\Luecx\CLionProjects\Grapheus\res\run1\weights\200.state)");
+//    model.test_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+
+
+//    model.train(loader, 1000, 1e8);
+//    loader.kill();
+//
     close();
-#endif
     return 0;
 }
