@@ -29,7 +29,7 @@ BreakConstructorInitializers: BeforeComma
 BreakBeforeTernaryOperators: true
 
 Cpp11BracedListStyle: true
-ColumnLimit: 102
+ColumnLimit: 130
 
 DeriveLineEnding: true
 DerivePointerAlignment: false
