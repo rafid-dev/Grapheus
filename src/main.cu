@@ -553,6 +553,12 @@ int main(int argc, const char* argv[]) {
     carbon_dataloader::DataLoader loader {R"(/mnt/f/trainingdata/test77-2021-11-nov-2tb7p.v6-3072.min.binpack)", 16384};
     loader.start();
 
+    std::cout << "Data loader started" << std::endl;
+
+    // for (int i = 0; i < 100; i++) {
+    //     auto batch = loader.next();
+    // }
+
     RiceModelBinpack model {};
 
     model.train(loader, 500, 1e8, 0.7f, 0.7f, 0);

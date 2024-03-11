@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <fstream>
 #include <numeric>
 #include <random>
@@ -17,15 +18,22 @@
 
 namespace carbon_dataloader {
 
+template<typename Duration = std::chrono::milliseconds>
+inline double tick() {
+
+    return (double) std::chrono::duration_cast<Duration>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
 struct DataLoader {
 
-    static constexpr std::size_t                        ChunkSize = (1 << 20);
+    static constexpr std::size_t                        ChunkSize = (1 << 21);
 
     std::string                                         path;
     binpack::binpack::CompressedTrainingDataEntryReader reader;
 
     std::vector<std::size_t>                            permute_shuffle;
     std::vector<binpack::binpack::TrainingDataEntry>    buffer;
+    std::vector<binpack::binpack::TrainingDataEntry>    active_buffer;
     std::vector<binpack::binpack::TrainingDataEntry>    active_batch;
 
     std::thread                                         readingThread;
@@ -37,6 +45,7 @@ struct DataLoader {
         , batch_size(batch_size)
         , path(filename) {
         buffer.reserve(ChunkSize);
+        active_buffer.reserve(ChunkSize);
         permute_shuffle.resize(ChunkSize);
         active_batch.reserve(batch_size);
     }
@@ -47,6 +56,15 @@ struct DataLoader {
 
         shuffle();
         loadNext();
+        loadToActiveBuffer();
+        readingThread = std::thread(&DataLoader::loadNext, this);
+    }
+
+    void loadToActiveBuffer() {
+        active_buffer.clear();
+        for (int i = 0; i < buffer.size(); i++) {
+            active_buffer.push_back(buffer[i]);
+        }
     }
 
     void loadNext() {
@@ -90,18 +108,21 @@ struct DataLoader {
         active_batch.clear();
 
         for (int i = 0; i < batch_size; i++) {
-            if (current_batch_index >= buffer.size()) {
+            if (current_batch_index >= active_buffer.size()) {
+
                 current_batch_index = 0;
 
-                // if (readingThread.joinable()) {
-                //     readingThread.join();
-                // }
+                if (readingThread.joinable()) {
+                    readingThread.join();
+                }
 
-                loadNext();
+                loadToActiveBuffer();
                 shuffle();
+
+                readingThread = std::thread(&DataLoader::loadNext, this);
             }
 
-            active_batch.push_back(buffer[permute_shuffle[current_batch_index++]]);
+            active_batch.push_back(active_buffer[permute_shuffle[current_batch_index++]]);
         }
 
         // std::cout << current_batch_index << std::endl;
@@ -112,6 +133,14 @@ struct DataLoader {
     void shuffle() {
         std::iota(permute_shuffle.begin(), permute_shuffle.end(), 0);
         std::shuffle(permute_shuffle.begin(), permute_shuffle.end(), std::mt19937(std::random_device()()));
+    }
+
+    void bench() {
+        auto start = tick();
+
+        loadNext();
+
+        auto duration = tick() - start;
     }
 };
 
