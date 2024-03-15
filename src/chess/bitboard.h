@@ -37,7 +37,9 @@ inline int popcount(BB bb) {
  * @param index     index of bit starting at the LST
  * @return          the manipulated number
  */
-inline void toggle(BB& number, Square index) { number ^= (1ULL << index); }
+inline void toggle(BB& number, Square index) {
+    number ^= (1ULL << index);
+}
 
 /**
  * set the bit
@@ -45,7 +47,9 @@ inline void toggle(BB& number, Square index) { number ^= (1ULL << index); }
  * @param index     index of bit starting at the LST
  * @return          the manipulated number
  */
-inline void set(BB& number, Square index) { number |= (1ULL << index); }
+inline void set(BB& number, Square index) {
+    number |= (1ULL << index);
+}
 
 /**
  * unset the bit
@@ -53,7 +57,9 @@ inline void set(BB& number, Square index) { number |= (1ULL << index); }
  * @param index     index of bit starting at the LST
  * @return          the manipulated number
  */
-inline void unset(BB& number, Square index) { number &= ~(1ULL << index); }
+inline void unset(BB& number, Square index) {
+    number &= ~(1ULL << index);
+}
 
 /**
  * get the bit
@@ -61,7 +67,9 @@ inline void unset(BB& number, Square index) { number &= ~(1ULL << index); }
  * @param index     index of bit starting at the LST
  * @return          the manipulated number
  */
-inline bool has(BB number, Square index) { return ((number >> index) & 1ULL) == 1; }
+inline bool has(BB number, Square index) {
+    return ((number >> index) & 1ULL) == 1;
+}
 
 #if defined(__GNUC__) // GCC, Clang, ICC
 
@@ -162,7 +170,9 @@ inline int popcount(BB bb, int pos) {
  * @param number
  * @return
  */
-inline BB lsb_reset(BB number) { return number & (number - 1); }
+inline BB lsb_reset(BB number) {
+    return number & (number - 1);
+}
 
 /**
  * find fully set groups of 4
@@ -230,5 +240,4 @@ inline T mask() {
     return (T) (((T) 1 << N) - 1);
 }
 
-}
-
+}    // namespace chess
