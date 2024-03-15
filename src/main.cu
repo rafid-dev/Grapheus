@@ -1,4 +1,5 @@
 #include "argparse.hpp"
+#include "carbondatasetloader.h"
 #include "chess/chess.h"
 #include "dataset/batchloader.h"
 #include "dataset/dataset.h"
@@ -18,69 +19,89 @@ using namespace nn;
 using namespace data;
 
 struct ChessModel : nn::Model {
-    float lambda;
 
-    ChessModel(float lambda_)
-        : lambda(lambda_) {}
+    int   max_epochs    = 0;
+    int   current_epoch = 0;
+
+    float start_lambda  = 0.7;
+    float end_lambda    = 0.7;
 
     // seting inputs
-    virtual void setup_inputs_and_outputs(dataset::DataSet<chess::Position>* positions) = 0;
+    virtual void setup_inputs_and_outputs(carbon::DataSet& positions) = 0;
 
     // train function
-    void train(dataset::BatchLoader<chess::Position>& loader,
-               int                                    epochs     = 1500,
-               int                                    epoch_size = 1e8) {
+    void train(carbon::DataLoader& loader,
+               int                 epochs             = 1000,
+               int                 epoch_size         = 1e7,
+               float               start_lambda       = 0.7,
+               float               end_lambda         = 0.7,
+               int                 epoch_continuation = 0) {
+        this->max_epochs   = epochs;
+        this->start_lambda = start_lambda;
+        this->end_lambda   = end_lambda;
         this->compile(loader.batch_size);
 
         Timer t {};
-        for (int i = 1; i <= epochs; i++) {
+        for (int i = epoch_continuation; i < epochs; i++) {
+            this->current_epoch = i;
             t.start();
+            size_t prev_duration = 0;
+            float  batch_loss    = 0;
+            float  epoch_loss    = 0;
 
-            uint64_t prev_print_tm    = 0;
-            float    total_epoch_loss = 0;
-
-            for (int b = 1; b <= epoch_size / loader.batch_size; b++) {
-                auto* ds = loader.next();
+            for (int b = 0; b < epoch_size / loader.batch_size; b++) {
+                // get the next dataset and set it up while the other things
+                // are running on the gpu
+                auto& ds = loader.next();
                 setup_inputs_and_outputs(ds);
 
-                float batch_loss = batch();
-                total_epoch_loss += batch_loss;
-                float epoch_loss = total_epoch_loss / b;
+                // print score of last iteration
+                if (b > 0) {
+                    batch_loss = loss_of_last_batch();
+                    epoch_loss += batch_loss;
+                }
 
                 t.stop();
-                uint64_t elapsed = t.elapsed();
-                if (elapsed - prev_print_tm > 1000 || b == epoch_size / loader.batch_size) {
-                    prev_print_tm = elapsed;
+                if (b > 0
+                    && (b == (epoch_size / loader.batch_size) - 1
+                        || t.elapsed() - prev_duration > 1000)) {
+                    prev_duration = t.elapsed();
 
-                    printf("\rep = [%4d], epoch_loss = [%1.8f], batch = [%5d], batch_loss = [%1.8f], "
-                           "speed = [%7.2f it/s], time = [%3ds]",
-                           i,
-                           epoch_loss,
-                           b,
-                           batch_loss,
-                           1000.0f * b / elapsed,
-                           (int) (elapsed / 1000.0f));
+                    printf("\rep/ba = [%3d/%5d], ", i, b);
+                    printf("batch_loss = [%1.8f], ", batch_loss);
+                    printf("epoch_loss = [%1.8f], ", epoch_loss / b);
+                    printf("speed = [%9d pos/s], ",
+                           (int) round(1000.0f * loader.batch_size * b / t.elapsed()));
+                    printf("time = [%3ds]", (int) t.elapsed() / 1000);
                     std::cout << std::flush;
                 }
+
+                // start training of new batch
+                batch();
             }
 
             std::cout << std::endl;
-
-            float epoch_loss = total_epoch_loss / (epoch_size / loader.batch_size);
-            next_epoch(epoch_loss, 0.0);
+            next_epoch(epoch_loss / (epoch_size / loader.batch_size));
         }
     }
 
     void test_fen(const std::string& fen) {
         this->compile(1);
 
-        chess::Position                   pos = chess::parse_fen(fen);
-        dataset::DataSet<chess::Position> ds {};
-        ds.positions.push_back(pos);
-        ds.header.entry_count = 1;
+        binpack::chess::Position pos;
+
+        pos.set(fen);
+
+        binpack::binpack::TrainingDataEntry entry;
+        entry.pos    = pos;
+        entry.score  = 0;
+        entry.result = 0;
+
+        carbon::DataSet entries;
+        entries.push_back(entry);
 
         // setup inputs of network
-        setup_inputs_and_outputs(&ds);
+        setup_inputs_and_outputs(entries);
 
         // forward pass
         this->upload_inputs();
@@ -107,27 +128,23 @@ struct ChessModel : nn::Model {
         }
     }
 
-    void distribution(dataset::BatchLoader<chess::Position>& loader, int batches = 32) {
+    void distribution(carbon::DataLoader& loader, int batches = 32) {
         this->compile(loader.batch_size);
 
-        std::vector<DenseMatrix<float>>            max_values {};
-        std::vector<DenseMatrix<float>>            min_values {};
-        std::vector<std::pair<uint64_t, uint64_t>> sparsity {};
+        std::vector<DenseMatrix<float>> max_values {};
+        std::vector<DenseMatrix<float>> min_values {};
 
         for (auto l : m_layers) {
             max_values.emplace_back(l->dense_output.values.m, 1);
             min_values.emplace_back(l->dense_output.values.m, 1);
             max_values.back().malloc<data::CPU>();
             min_values.back().malloc<data::CPU>();
-
-            math::fill<float>(max_values.back(), -std::numeric_limits<float>::max());
-            math::fill<float>(min_values.back(), std::numeric_limits<float>::max());
-
-            sparsity.push_back(std::pair(0, 0));
+            math::uniform(max_values.back(), -1000000.0f, -1000000.0f);
+            math::uniform(min_values.back(), 1000000.0f, 1000000.0f);
         }
 
         for (int b = 0; b < batches; b++) {
-            auto* ds = loader.next();
+            auto& ds = loader.next();
             setup_inputs_and_outputs(ds);
             this->upload_inputs();
             this->forward();
@@ -143,9 +160,6 @@ struct ChessModel : nn::Model {
                             std::max(max_values[i](m, 0), layer->dense_output.values(m, n));
                         min_values[i](m, 0) =
                             std::min(min_values[i](m, 0), layer->dense_output.values(m, n));
-
-                        sparsity[i].first++;
-                        sparsity[i].second += (layer->dense_output.values(m, n) > 0);
                     }
                 }
             }
@@ -190,12 +204,6 @@ struct ChessModel : nn::Model {
             std::cout << "died: " << died << " / " << max_values[i].size();
             std::cout << "\n";
 
-            float sparsity_total  = sparsity[i].first;
-            float sparsity_active = sparsity[i].second;
-
-            std::cout << "sparsity: " << sparsity_active / sparsity_total;
-            std::cout << "\n";
-
             for (auto p : m_layers[i]->params()) {
                 float min = 10000000;
                 float max = -10000000;
@@ -212,153 +220,129 @@ struct ChessModel : nn::Model {
     }
 };
 
-struct BerserkModel : ChessModel {
+struct RiceModel : ChessModel {
     SparseInput* in1;
     SparseInput* in2;
 
-    const float  sigmoid_scale = 1.0 / 160.0;
-    const float  quant_one     = 32.0;
-    const float  quant_two     = 32.0;
+    // clang-format off
+    // King bucket indicies
+    static constexpr int indices[64] = {
+        0,  1,  2,  3,  3,  2,  1,  0,
+        4,  5,  6,  7,  7,  6,  5,  4,
+        8,  9,  10, 11, 11, 10, 9,  8,
+        8,  9,  10, 11, 11, 10, 9,  8,
+        12, 12, 13, 13, 13, 13, 12, 12,
+        12, 12, 13, 13, 13, 13, 12, 12,
+        14, 14, 15, 15, 15, 15, 14, 14,
+        14, 14, 15, 15, 15, 15, 14, 14,
+    };
+    // clang-format on
 
-    const size_t n_features    = 16 * 12 * 64;
-    const size_t n_l1          = 16;
-    const size_t n_l2          = 32;
-    const size_t n_out         = 1;
+    RiceModel(size_t n_ft, float lambda, size_t save_rate)
+        : ChessModel() {
+        in1     = add<SparseInput>(12 * 64 * 16, 32);
+        in2     = add<SparseInput>(12 * 64 * 16, 32);
 
-    BerserkModel(size_t n_ft, float lambda, size_t save_rate)
-        : ChessModel(lambda) {
+        auto ft = add<FeatureTransformer>(in1, in2, n_ft);
+        auto re = add<ReLU>(ft);
+        auto af = add<Affine>(re, 1);
+        auto sm = add<Sigmoid>(af, 2.5 / 400);
 
-        in1                    = add<SparseInput>(n_features, 32);
-        in2                    = add<SparseInput>(n_features, 32);
-
-        auto ft                = add<FeatureTransformer>(in1, in2, n_ft);
-        auto fta               = add<ClippedRelu>(ft);
-        ft->ft_regularization  = 1.0 / 16384.0 / 4194304.0;
-        fta->max               = 127.0;
-
-        auto        l1         = add<Affine>(fta, n_l1);
-        auto        l1a        = add<ReLU>(l1);
-
-        auto        l2         = add<Affine>(l1a, n_l2);
-        auto        l2a        = add<ReLU>(l2);
-
-        auto        pos_eval   = add<Affine>(l2a, n_out);
-        auto        sigmoid    = add<Sigmoid>(pos_eval, sigmoid_scale);
-
-        const float hidden_max = 127.0 / quant_two;
         add_optimizer(AdamWarmup({{OptimizerEntry {&ft->weights}},
                                   {OptimizerEntry {&ft->bias}},
-                                  {OptimizerEntry {&l1->weights}.clamp(-hidden_max, hidden_max)},
-                                  {OptimizerEntry {&l1->bias}},
-                                  {OptimizerEntry {&l2->weights}},
-                                  {OptimizerEntry {&l2->bias}},
-                                  {OptimizerEntry {&pos_eval->weights}},
-                                  {OptimizerEntry {&pos_eval->bias}}},
+                                  {OptimizerEntry {&af->weights}},
+                                  {OptimizerEntry {&af->bias}}},
                                  0.95,
                                  0.999,
                                  1e-8,
                                  5 * 16384));
 
-        set_save_frequency(save_rate);
         add_quantization(Quantizer {
             "quant",
             save_rate,
-            QuantizerEntry<int16_t>(&ft->weights.values, quant_one, true),
-            QuantizerEntry<int16_t>(&ft->bias.values, quant_one),
-            QuantizerEntry<int8_t>(&l1->weights.values, quant_two),
-            QuantizerEntry<int32_t>(&l1->bias.values, quant_two),
-            QuantizerEntry<float>(&l2->weights.values, 1.0),
-            QuantizerEntry<float>(&l2->bias.values, quant_two),
-            QuantizerEntry<float>(&pos_eval->weights.values, 1.0),
-            QuantizerEntry<float>(&pos_eval->bias.values, quant_two),
+            QuantizerEntry<int16_t>(&ft->weights.values, 32, true),
+            QuantizerEntry<int16_t>(&ft->bias.values, 32),
+            QuantizerEntry<int16_t>(&af->weights.values, 128),
+            QuantizerEntry<int32_t>(&af->bias.values, 32 * 128),
         });
+        set_save_frequency(save_rate);
     }
 
-    inline int king_square_index(int relative_king_square) {
-        constexpr int indices[64] {
-            -1, -1, -1, -1, 14, 14, 15, 15,    //
-            -1, -1, -1, -1, 14, 14, 15, 15,    //
-            -1, -1, -1, -1, 12, 12, 13, 13,    //
-            -1, -1, -1, -1, 12, 12, 13, 13,    //
-            -1, -1, -1, -1, 8,  9,  10, 11,    //
-            -1, -1, -1, -1, 8,  9,  10, 11,    //
-            -1, -1, -1, -1, 4,  5,  6,  7,     //
-            -1, -1, -1, -1, 0,  1,  2,  3,     //
-        };
-
-        return indices[relative_king_square];
+    inline int king_square_index(int kingSquare, uint8_t kingColor) {
+        kingSquare = (56 * kingColor) ^ kingSquare;
+        return indices[kingSquare];
     }
 
-    inline int index(chess::Square piece_square,
-                     chess::Piece  piece,
-                     chess::Square king_square,
-                     chess::Color  view) {
+    inline int
+        index(uint8_t pieceType, uint8_t pieceColor, int square, uint8_t view, int kingSquare) {
+        const int ksIndex = king_square_index(kingSquare, view);
+        square            = square ^ (56 * view);
+        square            = square ^ (7 * !!(kingSquare & 0x4));
 
-        const chess::PieceType piece_type  = chess::type_of(piece);
-        const chess::Color     piece_color = chess::color_of(piece);
-
-        piece_square ^= 56;
-        king_square ^= 56;
-
-        const int oP  = piece_type + 6 * (piece_color != view);
-        const int oK  = (7 * !(king_square & 4)) ^ (56 * view) ^ king_square;
-        const int oSq = (7 * !(king_square & 4)) ^ (56 * view) ^ piece_square;
-
-        return king_square_index(oK) * 12 * 64 + oP * 64 + oSq;
+        // clang-format off
+        return square
+            + pieceType * 64
+            + !(pieceColor ^ view) * 64 * 6 + ksIndex * 64 * 6 * 2;
+        // clang-format on
     }
 
-    void setup_inputs_and_outputs(dataset::DataSet<chess::Position>* positions) {
+    void setup_inputs_and_outputs(carbon::DataSet& positions) {
         in1->sparse_output.clear();
         in2->sparse_output.clear();
 
         auto& target = m_loss->target;
 
-#pragma omp parallel for schedule(static) num_threads(16)
-        for (int b = 0; b < positions->header.entry_count; b++) {
-            chess::Position* pos = &positions->positions[b];
+#pragma omp parallel for schedule(static, 64) num_threads(6)
+        for (int b = 0; b < positions.size(); b++) {
+            const auto pos = positions[b].pos;
             // fill in the inputs and target values
 
-            chess::Square wKingSq = pos->get_king_square<chess::WHITE>();
-            chess::Square bKingSq = pos->get_king_square<chess::BLACK>();
+            const auto wKingSq = pos.kingSquare(binpack::chess::Color::White);
+            const auto bKingSq = pos.kingSquare(binpack::chess::Color::Black);
 
-            chess::BB     bb {pos->m_occupancy};
-            int           idx = 0;
+            const auto pieces  = pos.piecesBB();
 
-            while (bb) {
-                chess::Square sq                    = chess::lsb(bb);
-                chess::Piece  pc                    = pos->m_pieces.get_piece(idx);
+            for (auto sq : pieces) {
+                const auto         piece                 = pos.pieceAt(sq);
+                const std::uint8_t pieceType             = static_cast<uint8_t>(piece.type());
+                const std::uint8_t pieceColor            = static_cast<uint8_t>(piece.color());
 
-                auto          piece_index_white_pov = index(sq, pc, wKingSq, chess::WHITE);
-                auto          piece_index_black_pov = index(sq, pc, bKingSq, chess::BLACK);
+                auto               piece_index_white_pov = index(pieceType,
+                                                   pieceColor,
+                                                   static_cast<int>(sq),
+                                                   static_cast<uint8_t>(binpack::chess::Color::White),
+                                                   static_cast<int>(wKingSq));
+                auto               piece_index_black_pov = index(pieceType,
+                                                   pieceColor,
+                                                   static_cast<int>(sq),
+                                                   static_cast<uint8_t>(binpack::chess::Color::Black),
+                                                   static_cast<int>(bKingSq));
 
-                if (pos->m_meta.stm() == chess::WHITE) {
+                if (pos.sideToMove() == binpack::chess::Color::White) {
                     in1->sparse_output.set(b, piece_index_white_pov);
                     in2->sparse_output.set(b, piece_index_black_pov);
                 } else {
                     in2->sparse_output.set(b, piece_index_white_pov);
                     in1->sparse_output.set(b, piece_index_black_pov);
                 }
-
-                bb = chess::lsb_reset(bb);
-                idx++;
             }
 
-            float p_value = pos->m_result.score;
-            float w_value = pos->m_result.wdl;
+            float p_value = positions[b].score;
+            float w_value = positions[b].result;
 
             // flip if black is to move -> relative network style
-            if (pos->m_meta.stm() == chess::BLACK) {
-                p_value = -p_value;
-                w_value = -w_value;
-            }
+            // if (pos.sideToMove() == binpack::chess::Color::Black) {
+            //     p_value = -p_value;
+            //     w_value = -w_value;
+            // }
 
-            float p_target = 1 / (1 + expf(-p_value * sigmoid_scale));
+            float p_target = 1 / (1 + expf(-p_value * 2.5 / 400));
             float w_target = (w_value + 1) / 2.0f;
 
-            target(b)      = lambda * p_target + (1.0 - lambda) * w_target;
+            float actual_lambda =
+                start_lambda + (end_lambda - start_lambda) * (current_epoch / max_epochs);
 
-            // layer_selector->dense_output.values(b, 0) =
-            //     (int) ((chess::popcount(pos->m_occupancy) - 1) / 4);
+            target(b) = (actual_lambda * p_target + (1.0f - actual_lambda) * w_target) / 1.0f;
         }
     }
 };
@@ -374,19 +358,19 @@ int main(int argc, char* argv[]) {
         .help("Total number of epochs to train for")
         .scan<'i', int>();
     program.add_argument("--save-rate")
-        .default_value(50)
+        .default_value(10)
         .help("How frequently to save quantized networks + weights")
         .scan<'i', int>();
     program.add_argument("--ft-size")
-        .default_value(1024)
+        .default_value(512)
         .help("Number of neurons in the Feature Transformer")
         .scan<'i', int>();
     program.add_argument("--lambda")
-        .default_value(0.0f)
+        .default_value(0.7f)
         .help("Ratio of evaluation scored to use while training")
         .scan<'f', float>();
     program.add_argument("--lr")
-        .default_value(0.001f)
+        .default_value(0.01f)
         .help("The starting learning rate for the optimizer")
         .scan<'f', float>();
     program.add_argument("--batch-size")
@@ -394,11 +378,11 @@ int main(int argc, char* argv[]) {
         .help("Number of positions in a mini-batch during training")
         .scan<'i', int>();
     program.add_argument("--lr-drop-epoch")
-        .default_value(500)
+        .default_value(1)
         .help("Epoch to execute an LR drop at")
         .scan<'i', int>();
     program.add_argument("--lr-drop-ratio")
-        .default_value(0.025f)
+        .default_value(0.995f)
         .help("How much to scale down LR when dropping")
         .scan<'f', float>();
 
@@ -413,27 +397,6 @@ int main(int argc, char* argv[]) {
     math::seed(0);
 
     init();
-
-    std::vector<std::string> files {};
-
-    for (const auto& entry : fs::directory_iterator(program.get("data"))) {
-        const std::string path = entry.path().string();
-        files.push_back(path);
-    }
-
-    uint64_t total_positions = 0;
-    for (const auto& file_path : files) {
-        FILE*                  fin = fopen(file_path.c_str(), "rb");
-
-        dataset::DataSetHeader h {};
-        fread(&h, sizeof(dataset::DataSetHeader), 1, fin);
-
-        total_positions += h.entry_count;
-        fclose(fin);
-    }
-
-    std::cout << "Loading a total of " << files.size() << " files with " << total_positions
-              << " total position(s)" << std::endl;
 
     const int   total_epochs  = program.get<int>("--epochs");
     const int   save_rate     = program.get<int>("--save-rate");
@@ -453,10 +416,10 @@ int main(int argc, char* argv[]) {
               << "LR Drop @ " << lr_drop_epoch << "\n"
               << "LR Drop R " << lr_drop_ratio << std::endl;
 
-    dataset::BatchLoader<chess::Position> loader {files, batch_size};
+    carbon::DataLoader loader(program.get("data"), batch_size);
     loader.start();
 
-    BerserkModel model {static_cast<size_t>(ft_size), lambda, static_cast<size_t>(save_rate)};
+    RiceModel model {static_cast<size_t>(ft_size), lambda, static_cast<size_t>(save_rate)};
     model.set_loss(MPE {2.5, true});
     model.set_lr_schedule(StepDecayLRSchedule {lr, lr_drop_ratio, lr_drop_epoch});
 
@@ -472,9 +435,7 @@ int main(int argc, char* argv[]) {
         std::cout << "Loaded weights from previous " << *previous << std::endl;
     }
 
-    model.train(loader, total_epochs);
-
-    loader.kill();
+    model.train(loader, total_epochs, 1e8, lambda, lambda, 0);
 
     close();
     return 0;
