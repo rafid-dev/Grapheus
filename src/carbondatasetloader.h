@@ -18,6 +18,11 @@
 
 namespace carbon {
 
+inline auto& get_thread_local_rng() {
+    static thread_local std::mt19937_64 s_rng(std::random_device {}());
+    return s_rng;
+}
+
 template<typename Duration = std::chrono::milliseconds>
 inline double tick() {
 
@@ -74,6 +79,11 @@ struct DataLoader {
     void loadNext() {
         buffer.clear();
 
+        static constexpr int VALUE_NONE = 32002;
+
+        // filtering strategies taken from from NNUE-PyTorch's dataloader.
+        // https://github.com/official-stockfish/nnue-pytorch/
+
         for (std::size_t counter = 0; counter < ChunkSize;) {
             // If we finished, go back to the beginning
             if (!reader.hasNext()) {
@@ -81,10 +91,17 @@ struct DataLoader {
             }
 
             // Get info
-            auto entry = reader.next();
+            auto entry       = reader.next();
+
+            auto do_wld_skip = [&]() {
+                std::bernoulli_distribution distrib(
+                    1.0 - entry.score_result_prob() * entry.score_result_prob());
+                auto& prng = get_thread_local_rng();
+                return distrib(prng);
+            };
 
             // Skip if the entry score is none
-            if (entry.score == 32002) {
+            if (entry.score == VALUE_NONE) {
                 continue;
             }
 
@@ -94,7 +111,11 @@ struct DataLoader {
             }
 
             // Skip if the entry is a capturing move
-            if (entry.isCapturingMove()) {
+            if (entry.isCapturingMove() && (entry.score == 0 || entry.seeGE(0))) {
+                continue;
+            }
+
+            if (do_wld_skip()) {
                 continue;
             }
 
