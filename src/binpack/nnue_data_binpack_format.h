@@ -1,36 +1,52 @@
 /*
-  Stockfish, a UCI chess playing engine derived from Glaurung 2.1
-  Copyright (C) 2004-2021 The Stockfish developers (see AUTHORS file)
 
-  Stockfish is free software: you can redistribute it and/or modify
-  it under the terms of the GNU General Public License as published by
-  the Free Software Foundation, either version 3 of the License, or
-  (at your option) any later version.
+Copyright 2020 Tomasz Sobczyk
 
-  Stockfish is distributed in the hope that it will be useful,
-  but WITHOUT ANY WARRANTY; without even the implied warranty of
-  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-  GNU General Public License for more details.
+Permission is hereby granted, free of charge,
+to any person obtaining a copy of this software
+and associated documentation files (the "Software"),
+to deal in the Software without restriction,
+including without limitation the rights to use, copy,
+modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the
+Software is furnished to do so, subject to the following conditions:
 
-  You should have received a copy of the GNU General Public License
-  along with this program.  If not, see <http://www.gnu.org/licenses/>.
+The above copyright notice and this permission notice shall
+be included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES
+OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
+DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH
+THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
 */
 
 #pragma once
 
+#include "rng.h"
+
+#include <algorithm>
 #include <array>
 #include <cassert>
 #include <climits>
+#include <cmath>
+#include <condition_variable>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
 #include <iostream>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <optional>
+#include <random>
 #include <set>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 #if (defined(_MSC_VER) || defined(__INTEL_COMPILER)) && !defined(__clang__)
@@ -38,7 +54,6 @@
 #endif
 
 namespace binpack {
-
 namespace chess {
 #if defined(__clang__) || defined(__GNUC__) || defined(__GNUG__)
 
@@ -522,7 +537,7 @@ namespace chess {
         }
 
         [[nodiscard]] static constexpr std::string_view toString(EnumType c) noexcept {
-            return std::string_view("wb" + ordinal(c), 1);
+            return std::string_view("wb").substr(ordinal(c), 1);
         }
 
         [[nodiscard]] static constexpr char toChar(EnumType c) noexcept {
@@ -588,7 +603,8 @@ namespace chess {
         }
 
         [[nodiscard]] static constexpr std::string_view toString(EnumType p, Color c) noexcept {
-            return std::string_view("PpNnBbRrQqKk " + (chess::ordinal(p) * 2 + chess::ordinal(c)), 1);
+            return std::string_view("PpNnBbRrQqKk ")
+                .substr((chess::ordinal(p) * 2 + chess::ordinal(c)), 1);
         }
 
         [[nodiscard]] static constexpr char toChar(EnumType p, Color c) noexcept {
@@ -719,7 +735,7 @@ namespace chess {
         }
 
         [[nodiscard]] static constexpr std::string_view toString(EnumType p) noexcept {
-            return std::string_view("PpNnBbRrQqKk " + ordinal(p), 1);
+            return std::string_view("PpNnBbRrQqKk ").substr(ordinal(p), 1);
         }
 
         [[nodiscard]] static constexpr char toChar(EnumType p) noexcept {
@@ -862,7 +878,7 @@ namespace chess {
         [[nodiscard]] static constexpr std::string_view toString(EnumType c) noexcept {
             assert(ordinal(c) >= 0 && ordinal(c) < 8);
 
-            return std::string_view("abcdefgh" + ordinal(c), 1);
+            return std::string_view("abcdefgh").substr(ordinal(c), 1);
         }
 
         [[nodiscard]] static constexpr std::optional<File> fromChar(char c) noexcept {
@@ -900,7 +916,7 @@ namespace chess {
         [[nodiscard]] static constexpr std::string_view toString(EnumType c) noexcept {
             assert(ordinal(c) >= 0 && ordinal(c) < 8);
 
-            return std::string_view("12345678" + ordinal(c), 1);
+            return std::string_view("12345678").substr(ordinal(c), 1);
         }
 
         [[nodiscard]] static constexpr std::optional<Rank> fromChar(char c) noexcept {
@@ -1239,9 +1255,8 @@ namespace chess {
                                     "a5b5c5d5e5f5g5h5"
                                     "a6b6c6d6e6f6g6h6"
                                     "a7b7c7d7e7f7g7h7"
-                                    "a8b8c8d8e8f8g8h8"
-                                        + (ordinal(sq) * 2),
-                                    2);
+                                    "a8b8c8d8e8f8g8h8")
+                .substr(ordinal(sq) * 2, 2);
         }
 
         [[nodiscard]] static constexpr std::optional<Square>
@@ -3779,11 +3794,11 @@ namespace chess {
         }
 
         [[nodiscard]] inline std::uint16_t fullMove() const {
-            return m_ply / 2 + 1;
+            return (m_ply + 1) / 2;
         }
 
         inline void setFullMove(std::uint16_t hm) {
-            m_ply = 2 * (hm - 1) + (m_sideToMove == Color::Black);
+            m_ply = 2 * hm - 1 + (m_sideToMove == Color::Black);
         }
 
         [[nodiscard]] inline bool     isCheck() const;
@@ -4276,19 +4291,11 @@ namespace chess {
 
         // Generates all pseudo legal moves for the position.
         // `pos` must be a legal chess position
-        [[nodiscard]] inline std::vector<Move> generatePseudoLegalMoves(const Position& pos) {
-            std::vector<Move> moves;
-            forEachPseudoLegalMove(pos, [&moves](Move move) { moves.emplace_back(move); });
-            return moves;
-        }
+        [[nodiscard]] std::vector<Move> generatePseudoLegalMoves(const Position& pos);
 
         // Generates all legal moves for the position.
         // `pos` must be a legal chess position
-        [[nodiscard]] inline std::vector<Move> generateLegalMoves(const Position& pos) {
-            std::vector<Move> moves;
-            forEachLegalMove(pos, [&moves](Move move) { moves.emplace_back(move); });
-            return moves;
-        }
+        [[nodiscard]] std::vector<Move> generateLegalMoves(const Position& pos);
     }    // namespace movegen
 
     [[nodiscard]] inline bool Position::isCheck() const {
@@ -4753,7 +4760,6 @@ namespace chess {
                     } else {
                         king ^= occupiedChange;
                     }
-
                     break;
                 }
                 case PieceType::None: assert(false);
@@ -5048,7 +5054,7 @@ namespace chess {
         {
             const auto fullMove = nextPart();
             if (!fullMove.empty()) {
-                m_ply = 2 * (std::stoi(fullMove.data()) - 1) + (m_sideToMove == Color::Black);
+                m_ply = std::stoi(fullMove.data()) * 2 - (m_sideToMove == Color::White);
             } else {
                 m_ply = 0;
             }
@@ -5726,6 +5732,11 @@ namespace binpack {
         }
     }    // namespace nodchip
 
+    inline std::ifstream::pos_type filesize(const char* filename) {
+        std::ifstream in(filename, std::ifstream::ate | std::ifstream::binary);
+        return in.tellg();
+    }
+
     struct CompressedTrainingDataFile {
         struct Header {
             std::uint32_t chunkSize;
@@ -5734,14 +5745,14 @@ namespace binpack {
         CompressedTrainingDataFile(std::string path, std::ios_base::openmode om = std::ios_base::app)
             : m_path(std::move(path))
             , m_file(m_path, std::ios_base::binary | std::ios_base::in | std::ios_base::out | om) {
-            // Necessary for MAC because app mode makes it put the reading
-            // head at the end.
-            m_file.seekg(0);
+            // Racey but who cares
+            m_sizeBytes = filesize(m_path.c_str());
         }
 
         void append(const char* data, std::uint32_t size) {
             writeChunkHeader({size});
             m_file.write(data, size);
+            m_sizeBytes += size + 8;
         }
 
         [[nodiscard]] bool hasNextChunk() {
@@ -5753,6 +5764,10 @@ namespace binpack {
             return !m_file.eof();
         }
 
+        void seek_to_start() {
+            m_file.seekg(0);
+        }
+
         [[nodiscard]] std::vector<unsigned char> readNextChunk() {
             auto                       size = readChunkHeader().chunkSize;
             std::vector<unsigned char> data(size);
@@ -5760,9 +5775,14 @@ namespace binpack {
             return data;
         }
 
+        [[nodiscard]] std::size_t sizeBytes() const {
+            return m_sizeBytes;
+        }
+
         private:
         std::string  m_path;
         std::fstream m_file;
+        std::size_t  m_sizeBytes;
 
         void         writeChunkHeader(Header h) {
             unsigned char header[8];
@@ -5829,7 +5849,8 @@ namespace binpack {
         }
 
         [[nodiscard]] bool isCapturingMove() const {
-            return pos.pieceAt(move.to) != chess::Piece::none()
+            using namespace chess;
+            return pos.pieceAt(move.to) != Piece::none()
                    && pos.pieceAt(move.to).color()
                           != pos.pieceAt(move.from).color();    // Exclude castling
         }
@@ -6311,11 +6332,7 @@ namespace binpack {
         std::uint16_t              numPlies = 0;
         std::vector<unsigned char> movetext;
 
-        [[nodiscard]] std::size_t  numBytes() const {
-            return movetext.size();
-        }
-
-        void clear(const TrainingDataEntry& e) {
+        void                       clear(const TrainingDataEntry& e) {
             numPlies = 0;
             movetext.clear();
             m_bitsLeft  = 0;
@@ -6659,6 +6676,233 @@ namespace binpack {
                     m_isEnd = true;
                 }
             }
+        }
+    };
+
+    struct CompressedTrainingDataEntryParallelReader {
+        static constexpr std::size_t chunkSize = suggestedChunkSize;
+
+        CompressedTrainingDataEntryParallelReader(
+            int                                           concurrency,
+            std::vector<std::string>                      paths,
+            std::ios_base::openmode                       om            = std::ios_base::app,
+            bool                                          cyclic        = false,
+            std::function<bool(const TrainingDataEntry&)> skipPredicate = nullptr)
+            : m_concurrency(concurrency)
+            , m_bufferOffset(0)
+            , m_cyclic(cyclic)
+            , m_skipPredicate(std::move(skipPredicate)) {
+            m_numRunningWorkers.store(0);
+            std::vector<double> sizes;    // discrete distribution wants double weights
+            for (const auto& path : paths) {
+                auto& file = m_inputFiles.emplace_back(path, om);
+
+                if (!file.hasNextChunk()) {
+                    return;
+                }
+
+                sizes.emplace_back(static_cast<double>(file.sizeBytes()));
+            }
+
+            m_inputFileDistribution = std::discrete_distribution<>(sizes.begin(), sizes.end());
+
+            m_stopFlag.store(false);
+
+            auto worker = [this]() {
+                std::vector<unsigned char>               m_chunk {};
+                std::optional<PackedMoveScoreListReader> m_movelistReader(std::nullopt);
+                std::size_t                              m_offset(0);
+                std::vector<TrainingDataEntry>           m_localBuffer;
+                m_localBuffer.reserve(threadBufferSize);
+
+                bool isEnd = fetchNextChunkIfNeeded(m_offset, m_chunk);
+
+                while (!isEnd && !m_stopFlag.load()) {
+                    while (m_localBuffer.size() < threadBufferSize) {
+                        if (m_movelistReader.has_value()) {
+                            const auto e = m_movelistReader->nextEntry();
+
+                            if (!m_movelistReader->hasNext()) {
+                                m_offset += m_movelistReader->numReadBytes();
+                                m_movelistReader.reset();
+
+                                isEnd = fetchNextChunkIfNeeded(m_offset, m_chunk);
+                            }
+
+                            if (!m_skipPredicate || !m_skipPredicate(e))
+                                m_localBuffer.emplace_back(e);
+                        } else {
+                            PackedTrainingDataEntry packed;
+                            std::memcpy(&packed,
+                                        m_chunk.data() + m_offset,
+                                        sizeof(PackedTrainingDataEntry));
+                            m_offset += sizeof(PackedTrainingDataEntry);
+
+                            const std::uint16_t numPlies =
+                                (m_chunk[m_offset] << 8) | m_chunk[m_offset + 1];
+                            m_offset += 2;
+
+                            const auto e = unpackEntry(packed);
+
+                            if (numPlies > 0) {
+                                m_movelistReader.emplace(
+                                    e,
+                                    reinterpret_cast<unsigned char*>(m_chunk.data()) + m_offset,
+                                    numPlies);
+                            } else {
+                                isEnd = fetchNextChunkIfNeeded(m_offset, m_chunk);
+                            }
+
+                            if (!m_skipPredicate || !m_skipPredicate(e))
+                                m_localBuffer.emplace_back(e);
+                        }
+
+                        if (isEnd || m_stopFlag.load()) {
+                            break;
+                        }
+                    }
+
+                    if (!m_localBuffer.empty()) {
+                        // now shuffle the local buffer
+                        auto& prng = rng::get_thread_local_rng();
+                        std::shuffle(m_localBuffer.begin(), m_localBuffer.end(), prng);
+
+                        std::unique_lock lock(m_waitingBufferMutex);
+                        m_waitingBufferEmpty.wait(lock, [this]() {
+                            return m_waitingBuffer.empty() || m_stopFlag.load();
+                        });
+                        m_waitingBuffer.swap(m_localBuffer);
+
+                        lock.unlock();
+                        m_waitingBufferFull.notify_one();
+
+                        m_localBuffer.clear();
+                    }
+                }
+
+                m_numRunningWorkers.fetch_sub(1);
+
+                m_waitingBufferFull.notify_one();
+            };
+
+            for (int i = 0; i < concurrency; ++i) {
+                m_workers.emplace_back(worker);
+
+                // This cannot be done in the thread worker. We need
+                // to have a guarantee that this is incremented, but if
+                // we did it in the worker there's no guarantee
+                // that it executed.
+                m_numRunningWorkers.fetch_add(1);
+            }
+        }
+
+        [[nodiscard]] std::optional<TrainingDataEntry> next() {
+            if (m_bufferOffset >= m_buffer.size()) {
+                m_buffer.clear();
+
+                std::unique_lock lock(m_waitingBufferMutex);
+                m_waitingBufferFull.wait(lock, [this]() {
+                    return !m_waitingBuffer.empty() || !m_numRunningWorkers.load();
+                });
+                if (m_waitingBuffer.empty()) {
+                    return std::nullopt;
+                }
+
+                m_waitingBuffer.swap(m_buffer);
+                m_bufferOffset = 0;
+
+                lock.unlock();
+                m_waitingBufferEmpty.notify_one();
+            }
+
+            return m_buffer[m_bufferOffset++];
+        }
+
+        int fill(std::vector<TrainingDataEntry>& vec, std::size_t n) {
+            if (m_bufferOffset >= m_buffer.size()) {
+                m_buffer.clear();
+
+                std::unique_lock lock(m_waitingBufferMutex);
+                m_waitingBufferFull.wait(lock, [this]() {
+                    return !m_waitingBuffer.empty() || !m_numRunningWorkers.load();
+                });
+                if (m_waitingBuffer.empty()) {
+                    return 0;
+                }
+
+                m_waitingBuffer.swap(m_buffer);
+                m_bufferOffset = 0;
+
+                lock.unlock();
+                m_waitingBufferEmpty.notify_one();
+            }
+
+            const std::size_t m = std::min(n, m_buffer.size() - m_bufferOffset);
+            vec.insert(vec.end(),
+                       m_buffer.begin() + m_bufferOffset,
+                       m_buffer.begin() + m_bufferOffset + m);
+
+            m_bufferOffset += m;
+
+            if (m != n) {
+                return m + fill(vec, n - m);
+            } else {
+                return m;
+            }
+        }
+
+        ~CompressedTrainingDataEntryParallelReader() {
+            m_stopFlag.store(true);
+            m_waitingBufferEmpty.notify_all();
+
+            for (auto& worker : m_workers) {
+                if (worker.joinable()) {
+                    worker.join();
+                }
+            }
+        }
+
+        private:
+        int                                           m_concurrency;
+        std::vector<CompressedTrainingDataFile>       m_inputFiles;
+        std::discrete_distribution<>                  m_inputFileDistribution;
+        std::atomic_int                               m_numRunningWorkers;
+        bool                                          m_cyclic;
+
+        static constexpr int                          threadBufferSize = 256 * 256 * 16;
+
+        std::atomic_bool                              m_stopFlag;
+        std::vector<TrainingDataEntry>                m_waitingBuffer;
+        std::vector<TrainingDataEntry>                m_buffer;
+        std::size_t                                   m_bufferOffset;
+        std::mutex                                    m_waitingBufferMutex;
+        std::mutex                                    m_fileMutex;
+        std::condition_variable                       m_waitingBufferEmpty;
+        std::condition_variable                       m_waitingBufferFull;
+        std::function<bool(const TrainingDataEntry&)> m_skipPredicate;
+
+        std::vector<std::thread>                      m_workers;
+
+        bool fetchNextChunkIfNeeded(std::size_t& m_offset, std::vector<unsigned char>& m_chunk) {
+            if (m_offset + sizeof(PackedTrainingDataEntry) + 2 > m_chunk.size()) {
+                auto&             prng      = rng::get_thread_local_rng();
+                const std::size_t fileId    = m_inputFileDistribution(prng);
+                auto&             inputFile = m_inputFiles[fileId];
+
+                std::unique_lock  lock(m_fileMutex);
+
+                if (!inputFile.hasNextChunk()) {
+                    if (m_cyclic) {
+                        inputFile.seek_to_start();
+                    } else
+                        return true;
+                }
+
+                m_chunk  = inputFile.readNextChunk();
+                m_offset = 0;
+            }
+
+            return false;
         }
     };
 
@@ -7022,150 +7266,6 @@ namespace binpack {
         }
 
         std::cout << "Finished. Converted " << numProcessedPositions << " positions.\n";
-    }
-
-    inline void validatePlain(std::string inputPath) {
-        constexpr std::size_t reportSize = 1000000;
-
-        std::cout << "Validating " << inputPath << '\n';
-
-        TrainingDataEntry e;
-
-        std::string       key;
-        std::string       value;
-        std::string       move;
-
-        std::ifstream     inputFile(inputPath);
-        const auto        base                       = inputFile.tellg();
-        std::size_t       numProcessedPositions      = 0;
-        std::size_t       numProcessedPositionsBatch = 0;
-
-        for (;;) {
-            inputFile >> key;
-            if (!inputFile) {
-                break;
-            }
-
-            if (key == "e"sv) {
-                e.move = chess::uci::uciToMove(e.pos, move);
-                if (!e.isValid()) {
-                    std::cerr << "Illegal move " << chess::uci::moveToUci(e.pos, e.move)
-                              << " for position " << e.pos.fen() << '\n';
-                    return;
-                }
-
-                ++numProcessedPositions;
-                ++numProcessedPositionsBatch;
-
-                if (numProcessedPositionsBatch >= reportSize) {
-                    numProcessedPositionsBatch -= reportSize;
-                    const auto cur = inputFile.tellg();
-                    std::cout << "Processed " << (cur - base) << " bytes and "
-                              << numProcessedPositions << " positions.\n";
-                }
-
-                continue;
-            }
-
-            inputFile >> std::ws;
-            std::getline(inputFile, value, '\n');
-
-            if (key == "fen"sv)
-                e.pos = chess::Position::fromFen(value.c_str());
-            if (key == "move"sv)
-                move = value;
-            if (key == "score"sv)
-                e.score = std::stoi(value);
-            if (key == "ply"sv)
-                e.ply = std::stoi(value);
-            if (key == "result"sv)
-                e.result = std::stoi(value);
-        }
-
-        if (numProcessedPositionsBatch) {
-            const auto cur = inputFile.tellg();
-            std::cout << "Processed " << (cur - base) << " bytes and " << numProcessedPositions
-                      << " positions.\n";
-        }
-
-        std::cout << "Finished. Validated " << numProcessedPositions << " positions.\n";
-    }
-
-    inline void validateBin(std::string inputPath) {
-        constexpr std::size_t reportSize = 1000000;
-
-        std::cout << "Validating " << inputPath << '\n';
-
-        std::ifstream            inputFile(inputPath, std::ios_base::binary);
-        const auto               base                       = inputFile.tellg();
-        std::size_t              numProcessedPositions      = 0;
-        std::size_t              numProcessedPositionsBatch = 0;
-
-        nodchip::PackedSfenValue psv;
-        for (;;) {
-            inputFile.read(reinterpret_cast<char*>(&psv), sizeof(psv));
-            if (inputFile.gcount() != 40) {
-                break;
-            }
-
-            auto e = packedSfenValueToTrainingDataEntry(psv);
-            if (!e.isValid()) {
-                std::cerr << "Illegal move " << chess::uci::moveToUci(e.pos, e.move)
-                          << " for position " << e.pos.fen() << '\n';
-                return;
-            }
-
-            ++numProcessedPositions;
-            ++numProcessedPositionsBatch;
-
-            if (numProcessedPositionsBatch >= reportSize) {
-                numProcessedPositionsBatch -= reportSize;
-                const auto cur = inputFile.tellg();
-                std::cout << "Processed " << (cur - base) << " bytes and " << numProcessedPositions
-                          << " positions.\n";
-            }
-        }
-
-        if (numProcessedPositionsBatch) {
-            const auto cur = inputFile.tellg();
-            std::cout << "Processed " << (cur - base) << " bytes and " << numProcessedPositions
-                      << " positions.\n";
-        }
-
-        std::cout << "Finished. Validated " << numProcessedPositions << " positions.\n";
-    }
-
-    inline void validateBinpack(std::string inputPath) {
-        constexpr std::size_t reportSize = 1000000;
-
-        std::cout << "Validating " << inputPath << '\n';
-
-        CompressedTrainingDataEntryReader reader(inputPath);
-        std::size_t                       numProcessedPositions      = 0;
-        std::size_t                       numProcessedPositionsBatch = 0;
-
-        while (reader.hasNext()) {
-            auto e = reader.next();
-            if (!e.isValid()) {
-                std::cerr << "Illegal move " << chess::uci::moveToUci(e.pos, e.move)
-                          << " for position " << e.pos.fen() << '\n';
-                return;
-            }
-
-            ++numProcessedPositions;
-            ++numProcessedPositionsBatch;
-
-            if (numProcessedPositionsBatch >= reportSize) {
-                numProcessedPositionsBatch -= reportSize;
-                std::cout << "Processed " << numProcessedPositions << " positions.\n";
-            }
-        }
-
-        if (numProcessedPositionsBatch) {
-            std::cout << "Processed " << numProcessedPositions << " positions.\n";
-        }
-
-        std::cout << "Finished. Validated " << numProcessedPositions << " positions.\n";
     }
 }    // namespace binpack
 

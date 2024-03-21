@@ -5,7 +5,7 @@
 NVCC = nvcc
 CXX = g++
 CXXFLAGS = -std=c++17 -fopenmp -stdlib=libc++
-NVCCFLAGS = -use_fast_math -O3 -DNDEBUG -std=c++17 -Xcompiler -fopenmp
+NVCCFLAGS = -use_fast_math -O3 -DNDEBUG -std=c++20 -Xcompiler -fopenmp
 
 # Libraries
 LIBS = -lcublas

@@ -28,6 +28,7 @@ struct ChessModel : nn::Model {
 
     // seting inputs
     virtual void setup_inputs_and_outputs(carbon::DataSet& positions) = 0;
+    virtual void setup_inputs_and_outputs(carbon::DataEntry&)         = 0;
 
     // train function
     void train(carbon::DataLoader& loader,
@@ -92,16 +93,13 @@ struct ChessModel : nn::Model {
 
         pos.set(fen);
 
-        binpack::binpack::TrainingDataEntry entry;
+        carbon::DataEntry entry;
         entry.pos    = pos;
         entry.score  = 0;
         entry.result = 0;
 
-        carbon::DataSet entries;
-        entries.push_back(entry);
-
         // setup inputs of network
-        setup_inputs_and_outputs(entries);
+        setup_inputs_and_outputs(entry);
 
         // forward pass
         this->upload_inputs();
@@ -224,6 +222,8 @@ struct RiceModel : ChessModel {
     SparseInput* in1;
     SparseInput* in2;
 
+    int          threads = 6;
+
     // clang-format off
     // King bucket indicies
     static constexpr int indices[64] = {
@@ -238,24 +238,30 @@ struct RiceModel : ChessModel {
     };
     // clang-format on
 
+    int         num_output_buckets = 8;
+
+    DenseInput* layer_selector;
+
     RiceModel(size_t n_ft, float lambda, size_t save_rate)
         : ChessModel() {
-        in1     = add<SparseInput>(12 * 64 * 16, 32);
-        in2     = add<SparseInput>(12 * 64 * 16, 32);
+        in1                   = add<SparseInput>(12 * 64 * 16, 32);
+        in2                   = add<SparseInput>(12 * 64 * 16, 32);
+        layer_selector        = add<DenseInput>(1);
 
-        auto ft = add<FeatureTransformer>(in1, in2, n_ft);
-        auto re = add<ReLU>(ft);
-        auto af = add<Affine>(re, 1);
-        auto sm = add<Sigmoid>(af, 2.5 / 400);
+        auto ft               = add<FeatureTransformer>(in1, in2, n_ft);
+        ft->ft_regularization = 1.0 / 16384.0 / 4194304.0;
+        auto re               = add<ReLU>(ft);
+        auto af               = add<AffineMulti>(re, 1, num_output_buckets);
+        auto layer_eval       = add<SelectSingle>(af, layer_selector, num_output_buckets);
+        auto sm               = add<Sigmoid>(layer_eval, 2.5 / 400);
 
-        add_optimizer(AdamWarmup({{OptimizerEntry {&ft->weights}},
-                                  {OptimizerEntry {&ft->bias}},
-                                  {OptimizerEntry {&af->weights}},
-                                  {OptimizerEntry {&af->bias}}},
-                                 0.95,
-                                 0.999,
-                                 1e-8,
-                                 5 * 16384));
+        add_optimizer(Adam({{OptimizerEntry {&ft->weights}},
+                            {OptimizerEntry {&ft->bias}},
+                            {OptimizerEntry {&af->weights}},
+                            {OptimizerEntry {&af->bias}}},
+                           0.9,
+                           0.999,
+                           1e-8));
 
         add_quantization(Quantizer {
             "quant",
@@ -292,7 +298,7 @@ struct RiceModel : ChessModel {
 
         auto& target = m_loss->target;
 
-#pragma omp parallel for schedule(static, 64) num_threads(6)
+#pragma omp parallel for schedule(static, 64) num_threads(threads)
         for (int b = 0; b < positions.size(); b++) {
             const auto pos = positions[b].pos;
             // fill in the inputs and target values
@@ -327,14 +333,8 @@ struct RiceModel : ChessModel {
                 }
             }
 
-            float p_value = positions[b].score;
-            float w_value = positions[b].result;
-
-            // flip if black is to move -> relative network style
-            // if (pos.sideToMove() == binpack::chess::Color::Black) {
-            //     p_value = -p_value;
-            //     w_value = -w_value;
-            // }
+            float p_value  = positions[b].score;
+            float w_value  = positions[b].result;
 
             float p_target = 1 / (1 + expf(-p_value * 2.5 / 400));
             float w_target = (w_value + 1) / 2.0f;
@@ -343,6 +343,49 @@ struct RiceModel : ChessModel {
                 start_lambda + (end_lambda - start_lambda) * (current_epoch / max_epochs);
 
             target(b) = (actual_lambda * p_target + (1.0f - actual_lambda) * w_target) / 1.0f;
+
+            int layer = (pos.piecesBB().count() - 2) / (32 / num_output_buckets);
+            layer_selector->dense_output.values(b, 0) = layer;
+        }
+    }
+
+    void setup_inputs_and_outputs(carbon::DataEntry& entry) {
+        in1->sparse_output.clear();
+        in2->sparse_output.clear();
+
+        auto&      target = m_loss->target;
+
+        const auto pos    = entry.pos;
+        // fill in the inputs and target values
+
+        const auto wKingSq = pos.kingSquare(binpack::chess::Color::White);
+        const auto bKingSq = pos.kingSquare(binpack::chess::Color::Black);
+
+        const auto pieces  = pos.piecesBB();
+
+        for (auto sq : pieces) {
+            const auto         piece                 = pos.pieceAt(sq);
+            const std::uint8_t pieceType             = static_cast<uint8_t>(piece.type());
+            const std::uint8_t pieceColor            = static_cast<uint8_t>(piece.color());
+
+            auto               piece_index_white_pov = index(pieceType,
+                                               pieceColor,
+                                               static_cast<int>(sq),
+                                               static_cast<uint8_t>(binpack::chess::Color::White),
+                                               static_cast<int>(wKingSq));
+            auto               piece_index_black_pov = index(pieceType,
+                                               pieceColor,
+                                               static_cast<int>(sq),
+                                               static_cast<uint8_t>(binpack::chess::Color::Black),
+                                               static_cast<int>(bKingSq));
+
+            if (pos.sideToMove() == binpack::chess::Color::White) {
+                in1->sparse_output.set(0, piece_index_white_pov);
+                in2->sparse_output.set(0, piece_index_black_pov);
+            } else {
+                in2->sparse_output.set(0, piece_index_white_pov);
+                in1->sparse_output.set(0, piece_index_black_pov);
+            }
         }
     }
 };
@@ -351,6 +394,10 @@ int main(int argc, char* argv[]) {
     argparse::ArgumentParser program("Grapheus");
 
     program.add_argument("data").required().help("Directory containing training files");
+    program.add_argument("--concurrency")
+        .required()
+        .help("Sets the number of threads the dataloader will use.")
+        .scan<'i', int>();
     program.add_argument("--output").required().help("Output directory for network files");
     program.add_argument("--resume").help("Weights file to resume from");
     program.add_argument("--epochs")
@@ -365,9 +412,13 @@ int main(int argc, char* argv[]) {
         .default_value(512)
         .help("Number of neurons in the Feature Transformer")
         .scan<'i', int>();
-    program.add_argument("--lambda")
+    program.add_argument("--startlambda")
         .default_value(0.7f)
-        .help("Ratio of evaluation scored to use while training")
+        .help("Start lambda for ratio of evaluation")
+        .scan<'f', float>();
+    program.add_argument("--endlambda")
+        .default_value(0.7f)
+        .help("End lambda for ratio of evaluation")
         .scan<'f', float>();
     program.add_argument("--lr")
         .default_value(0.01f)
@@ -401,7 +452,8 @@ int main(int argc, char* argv[]) {
     const int   total_epochs  = program.get<int>("--epochs");
     const int   save_rate     = program.get<int>("--save-rate");
     const int   ft_size       = program.get<int>("--ft-size");
-    const float lambda        = program.get<float>("--lambda");
+    const float startlambda   = program.get<float>("--startlambda");
+    const float endlambda     = program.get<float>("--endlambda");
     const float lr            = program.get<float>("--lr");
     const int   batch_size    = program.get<int>("--batch-size");
     const int   lr_drop_epoch = program.get<int>("--lr-drop-epoch");
@@ -410,16 +462,25 @@ int main(int argc, char* argv[]) {
     std::cout << "Epochs: " << total_epochs << "\n"
               << "Save Rate: " << save_rate << "\n"
               << "FT Size: " << ft_size << "\n"
-              << "Lambda: " << lambda << "\n"
+              << "Start lambda: " << startlambda << "\n"
+              << "End lambda: " << endlambda << "\n"
               << "LR: " << lr << "\n"
               << "Batch: " << batch_size << "\n"
               << "LR Drop @ " << lr_drop_epoch << "\n"
               << "LR Drop R " << lr_drop_ratio << std::endl;
 
-    carbon::DataLoader loader(program.get("data"), batch_size);
+    std::vector<std::string> files {};
+
+    for (const auto& entry : fs::directory_iterator(program.get("data"))) {
+        const std::string path = entry.path().string();
+        files.push_back(path);
+        std::cout << "Found " << path << std::endl;
+    }
+
+    carbon::DataLoader loader(files, batch_size, program.get<int>("--concurrency"));
     loader.start();
 
-    RiceModel model {static_cast<size_t>(ft_size), lambda, static_cast<size_t>(save_rate)};
+    RiceModel model {static_cast<size_t>(ft_size), startlambda, static_cast<size_t>(save_rate)};
     model.set_loss(MPE {2.5, true});
     model.set_lr_schedule(StepDecayLRSchedule {lr, lr_drop_ratio, lr_drop_epoch});
 
@@ -435,7 +496,7 @@ int main(int argc, char* argv[]) {
         std::cout << "Loaded weights from previous " << *previous << std::endl;
     }
 
-    model.train(loader, total_epochs, 1e8, lambda, lambda, 0);
+    model.train(loader, total_epochs, 1e8, startlambda, endlambda, 0);
 
     close();
     return 0;
