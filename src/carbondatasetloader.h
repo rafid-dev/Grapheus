@@ -85,34 +85,34 @@ std::function<bool(const DataEntry&)> skipPredicate = [](const DataEntry& entry)
         return true;
     }
 
-    const int pc = entry.pos.piecesBB().count();
-    piece_count_history_all[pc] += 1;
-    piece_count_history_all_total += 1;
+    // const int pc = entry.pos.piecesBB().count();
+    // piece_count_history_all[pc] += 1;
+    // piece_count_history_all_total += 1;
 
-    // update alpha, which scales the filtering probability, to a maximum rate.
-    if (uint64_t(piece_count_history_all_total) % 10000 == 0) {
-        double pass = piece_count_history_all_total * desired_piece_count_weights_total;
-        for (int i = 0; i < 33; ++i) {
-            if (desired_piece_count_weights[pc] > 0) {
-                double tmp = piece_count_history_all_total * desired_piece_count_weights[pc]
-                             / (desired_piece_count_weights_total * piece_count_history_all[pc]);
-                if (tmp < pass)
-                    pass = tmp;
-            }
-        }
-        alpha = 1.0 / (pass * max_skipping_rate);
-    }
+    // // update alpha, which scales the filtering probability, to a maximum rate.
+    // if (uint64_t(piece_count_history_all_total) % 10000 == 0) {
+    //     double pass = piece_count_history_all_total * desired_piece_count_weights_total;
+    //     for (int i = 0; i < 33; ++i) {
+    //         if (desired_piece_count_weights[pc] > 0) {
+    //             double tmp = piece_count_history_all_total * desired_piece_count_weights[pc]
+    //                          / (desired_piece_count_weights_total * piece_count_history_all[pc]);
+    //             if (tmp < pass)
+    //                 pass = tmp;
+    //         }
+    //     }
+    //     alpha = 1.0 / (pass * max_skipping_rate);
+    // }
 
-    double tmp = alpha * piece_count_history_all_total * desired_piece_count_weights[pc]
-                 / (desired_piece_count_weights_total * piece_count_history_all[pc]);
-    tmp = std::min(1.0, tmp);
-    std::bernoulli_distribution distrib(1.0 - tmp);
-    auto&                       prng = rng::get_thread_local_rng();
-    if (distrib(prng))
-        return true;
+    // double tmp = alpha * piece_count_history_all_total * desired_piece_count_weights[pc]
+    //              / (desired_piece_count_weights_total * piece_count_history_all[pc]);
+    // tmp = std::min(1.0, tmp);
+    // std::bernoulli_distribution distrib(1.0 - tmp);
+    // auto&                       prng = rng::get_thread_local_rng();
+    // if (distrib(prng))
+    //     return true;
 
-    piece_count_history_passed[pc] += 1;
-    piece_count_history_passed_total += 1;
+    // piece_count_history_passed[pc] += 1;
+    // piece_count_history_passed_total += 1;
 
     return false;
 };

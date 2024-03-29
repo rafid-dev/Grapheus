@@ -230,30 +230,34 @@ struct RiceModel : ChessModel {
         0,  1,  2,  3,  3,  2,  1,  0,
         4,  5,  6,  7,  7,  6,  5,  4,
         8,  9,  10, 11, 11, 10, 9,  8,
-        8,  9,  10, 11, 11, 10, 9,  8,
-        12, 12, 13, 13, 13, 13, 12, 12,
-        12, 12, 13, 13, 13, 13, 12, 12,
-        14, 14, 15, 15, 15, 15, 14, 14,
-        14, 14, 15, 15, 15, 15, 14, 14,
+        12, 13, 14, 15, 15, 14, 13, 12,
+        16, 17, 18, 19, 19, 18, 17, 16,
+        20, 21, 22, 23, 23, 22, 21, 20,
+        24, 25, 26, 27, 27, 26, 25, 24,
+        28, 29, 30, 31, 31, 30, 29, 28,
     };
+
+    // static constexpr int indices[64] = {
+    //     0,  1,  2,  3,  3,  2,  1,  0,
+    //     4,  5,  6,  7,  7,  6,  5,  4,
+    //     8,  9,  10, 11, 11, 10, 9,  8,
+    //     8,  9,  10, 11, 11, 10, 9,  8,
+    //     12, 12, 13, 13, 13, 13, 12, 12,
+    //     12, 12, 13, 13, 13, 13, 12, 12,
+    //     14, 14, 15, 15, 15, 15, 14, 14,
+    //     14, 14, 15, 15, 15, 15, 14, 14,
+    // };
     // clang-format on
-
-    int         num_output_buckets = 8;
-
-    DenseInput* layer_selector;
 
     RiceModel(size_t n_ft, float lambda, size_t save_rate)
         : ChessModel() {
-        in1                   = add<SparseInput>(12 * 64 * 16, 32);
-        in2                   = add<SparseInput>(12 * 64 * 16, 32);
-        layer_selector        = add<DenseInput>(1);
+        in1     = add<SparseInput>(12 * 64 * 32, 32);
+        in2     = add<SparseInput>(12 * 64 * 32, 32);
 
-        auto ft               = add<FeatureTransformer>(in1, in2, n_ft);
-        ft->ft_regularization = 1.0 / 16384.0 / 4194304.0;
-        auto re               = add<ReLU>(ft);
-        auto af               = add<AffineMulti>(re, 1, num_output_buckets);
-        auto layer_eval       = add<SelectSingle>(af, layer_selector, num_output_buckets);
-        auto sm               = add<Sigmoid>(layer_eval, 2.5 / 400);
+        auto ft = add<FeatureTransformer>(in1, in2, n_ft);
+        auto re = add<ReLU>(ft);
+        auto af = add<Affine>(re, 1);
+        auto sm = add<Sigmoid>(af, 2.5 / 400);
 
         add_optimizer(Adam({{OptimizerEntry {&ft->weights}},
                             {OptimizerEntry {&ft->bias}},
@@ -344,8 +348,8 @@ struct RiceModel : ChessModel {
 
             target(b) = (actual_lambda * p_target + (1.0f - actual_lambda) * w_target) / 1.0f;
 
-            int layer = (pos.piecesBB().count() - 2) / (32 / num_output_buckets);
-            layer_selector->dense_output.values(b, 0) = layer;
+            // int layer = (pos.piecesBB().count() - 2) / (32 / num_output_buckets);
+            // layer_selector->dense_output.values(b, 0) = layer;
         }
     }
 
@@ -409,7 +413,7 @@ int main(int argc, char* argv[]) {
         .help("How frequently to save quantized networks + weights")
         .scan<'i', int>();
     program.add_argument("--ft-size")
-        .default_value(512)
+        .default_value(384)
         .help("Number of neurons in the Feature Transformer")
         .scan<'i', int>();
     program.add_argument("--startlambda")
