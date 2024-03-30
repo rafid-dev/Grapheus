@@ -2,8 +2,9 @@
 #include "defs.h"
 
 #include <iostream>
-#ifndef __ARM__
-#include <immintrin.h>
+
+#if defined(_MSC_VER)
+#include <intrin.h>
 #endif
 
 #if defined(_MSC_VER) && (defined(_M_X64) || defined(_M_IX86))
@@ -13,6 +14,23 @@
 
 namespace chess{
 
+/**
+ * returns the amount of set bits in the given bitboard.
+ * @param bb
+ * @return
+ */
+inline int popcount(BB bb) { 
+#if defined(_MSC_VER) 
+
+    return (uint8_t)__popcnt64(bb);
+
+#else
+
+    return __builtin_popcountll(bb);
+
+#endif
+}
+    
 /**
  * toggles the bit
  * @param number    number to manipulate
@@ -53,41 +71,70 @@ inline bool has(BB number, Square index) {
     return ((number >> index) & 1ULL) == 1;
 }
 
-/**
- * returns the index of the LSB
- * @param bb
- * @return
- */
-inline Square lsb(BB bb) {
-//    UCI_ASSERT(bb != 0);
-#if defined(_MSC_VER) && (defined(_M_X64) || defined(_M_IX86))
-    return _tzcnt_u64(bb);
-#else
-    return __builtin_ctzll(bb);
-#endif
+#if defined(__GNUC__) // GCC, Clang, ICC
+
+inline Square lsb(BB b)
+{
+    if (!b)
+        return 0;
+    return Square(__builtin_ctzll(b));
 }
+
+inline Square msb(BB b)
+{
+    if (!b)
+        return 0;
+    return Square(63 ^ __builtin_clzll(b));
+}
+
+#elif defined(_MSC_VER) // MSVC
+
+#ifdef _WIN64 // MSVC, WIN64
+inline Square lsb(BB b)
+{
+    unsigned long idx;
+    _BitScanForward64(&idx, b);
+    return (Square)idx;
+}
+
+inline Square msb(BB b)
+{
+    unsigned long idx;
+    _BitScanReverse64(&idx, b);
+    return (Square)idx;
+}
+
+#endif
+
+#else
+
+#error "Compiler not supported."
+
+#endif
 
 /**
  * returns the index of the nth set bit, starting at the lsb
  * @param bb
  * @return
- */
-inline Square nlsb(BB bb, Square n) {
+ */inline Square nlsb(BB bb, Square n) {
+// https://stackoverflow.com/questions/7669057/find-nth-set-bit-in-an-int
+#ifdef __BMI2__
+    return lsb(__builtin_ia32_pdep_di(1ULL << n, bb));
+#else
 
-#ifdef __ARM__
-https:    // stackoverflow.com/questions/7669057/find-nth-set-bit-in-an-int
+
     n += 1;
     BB shifted = 0;    // running total
     BB nBits;          // value for this iteration
 
     // handle no solution
-    if (n > bitCount(bb))
+    if (n > popcount(bb))
         return 64;
 
     while (n > 7) {
         // for large n shift out lower n-1 bits from v.
         nBits = n - 1;
-        n -= bitCount(bb & ((1 << nBits) - 1));
+        n -= popcount(bb & ((1 << nBits) - 1));
         bb >>= nBits;
         shifted += nBits;
     }
@@ -98,24 +145,17 @@ https:    // stackoverflow.com/questions/7669057/find-nth-set-bit-in-an-int
     while (next = bb & (bb - 1), --n) {
         bb = next;
     }
-    return bitscanForward((bb ^ next) << shifted);
-#else
-    return lsb(_pdep_u64(1ULL << n, bb));
+#ifdef __GNUC__
+    return __builtin_ctzll((bb ^ next) << shifted);
+#elif defined(_MSC_VER)
+    unsigned long idx;
+    _BitScanForward64(&idx, (bb ^ next) << shifted);
+    return (Square)idx;
+#endif
+
 #endif
 }
 
-/**
- * returns the amount of set bits in the given bitboard.
- * @param bb
- * @return
- */
-inline int popcount(BB bb) {
-#if defined(_MSC_VER) && (defined(_M_X64) || defined(_M_IX86))
-    return __popcnt64(bb);
-#else
-    return __builtin_popcountll(bb);
-#endif
-}
 
 /**
  * counts the ones inside the bitboard before the given index
