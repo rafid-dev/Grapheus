@@ -33,7 +33,7 @@ struct RiceModel : ChessModel<binpackloader::BinpackLoader> {
         in2     = add<SparseInput>(12 * 64 * FeatureSet::COUNT, 32);
 
         auto ft = add<FeatureTransformer>(in1, in2, n_ft);
-        auto re = add<ReLU>(ft);
+        auto re = add<ClippedRelu2>(ft);
         auto af = add<Affine>(re, 1);
         auto sm = add<Sigmoid>(af, 2.5 / 400);
 
@@ -48,10 +48,10 @@ struct RiceModel : ChessModel<binpackloader::BinpackLoader> {
         add_quantization(Quantizer {
             "quant",
             save_rate,
-            QuantizerEntry<int16_t>(&ft->weights.values, 32, true),
-            QuantizerEntry<int16_t>(&ft->bias.values, 32),
+            QuantizerEntry<int16_t>(&ft->weights.values, 181, true),
+            QuantizerEntry<int16_t>(&ft->bias.values, 181),
             QuantizerEntry<int16_t>(&af->weights.values, 128),
-            QuantizerEntry<int32_t>(&af->bias.values, 32 * 128),
+            QuantizerEntry<int32_t>(&af->bias.values, 181 * 128),
         });
         set_save_frequency(save_rate);
     }

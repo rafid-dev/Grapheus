@@ -65,14 +65,13 @@ struct Linear : public Layer {
     void backward() override {
         Layer::backward();
         operations::linear_bp<data::GPU>(prev->dense_output.values,
-                                          prev->dense_output.gradients,
-                                          dense_output.values,
-                                          dense_output.gradients,
-                                          scalar,
-                                          grad_op);
+                                         prev->dense_output.gradients,
+                                         dense_output.values,
+                                         dense_output.gradients,
+                                         scalar,
+                                         grad_op);
     }
 };
-
 
 struct Sigmoid : public Layer {
     Layer*            prev;
@@ -136,6 +135,38 @@ struct ClippedRelu : public Layer {
                                         dense_output.gradients,
                                         max,
                                         grad_op);
+    }
+};
+
+struct ClippedRelu2 : public Layer {
+    Layer*            prev;
+    GradientOperation grad_op;
+    int               use_id;
+    float             max;
+    explicit ClippedRelu2(Layer* prev, float max = 1)
+        : Layer(prev->size)
+        , prev(prev)
+        , max(max) {
+        use_id = prev->use();
+    }
+
+    void compile(size_t batch_size) override {
+        this->compile_suboutput(batch_size, Tape {size, batch_size});
+        this->grad_op = use_id == prev->used() ? SET : INCREMENT;
+    }
+
+    void forward() override {
+        Layer::forward();
+        operations::crelu2<data::GPU>(prev->dense_output.values, dense_output.values, max);
+    }
+    void backward() override {
+        Layer::backward();
+        operations::crelu2_bp<data::GPU>(prev->dense_output.values,
+                                         prev->dense_output.gradients,
+                                         dense_output.values,
+                                         dense_output.gradients,
+                                         max,
+                                         grad_op);
     }
 };
 
