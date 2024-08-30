@@ -1,5 +1,6 @@
 #pragma once
 
+#include "../nn/featuresets.h"
 #include "chessmodel.h"
 
 namespace model {
@@ -13,33 +14,23 @@ struct RiceModel : ChessModel<binpackloader::BinpackLoader> {
     float        start_lambda = 0.7;
     float        end_lambda   = 0.7;
 
-    // clang-format off
-    // King bucket indicies
-    static constexpr int indices[64] = {
-        0,  1,  2,  3,  3,  2,  1,  0,
-        4,  5,  6,  7,  7,  6,  5,  4,
-        8,  9,  10, 11, 11, 10, 9,  8,
-        12, 13, 14, 15, 15, 14, 13, 12,
-        16, 17, 18, 19, 19, 18, 17, 16,
-        20, 21, 22, 23, 23, 22, 21, 20,
-        24, 25, 26, 27, 27, 26, 25, 24,
-        28, 29, 30, 31, 31, 30, 29, 28,
-    };
+    using FeatureSet          = nn::FeatureSets::QuadBuckets_hm;
+
     // clang-format on
 
     RiceModel(binpackloader::BinpackLoader&                train_loader,
               std::optional<binpackloader::BinpackLoader>& val_loader,
-              size_t                                       n_ft,
+              int                                          n_ft,
               float                                        start_lambda,
               float                                        end_lambda,
-              size_t                                       save_rate)
+              int                                          save_rate)
 
         : start_lambda(start_lambda)
         , end_lambda(end_lambda)
         , ChessModel(train_loader, val_loader) {
 
-        in1     = add<SparseInput>(12 * 64 * 32, 32);
-        in2     = add<SparseInput>(12 * 64 * 32, 32);
+        in1     = add<SparseInput>(12 * 64 * FeatureSet::COUNT, 32);
+        in2     = add<SparseInput>(12 * 64 * FeatureSet::COUNT, 32);
 
         auto ft = add<FeatureTransformer>(in1, in2, n_ft);
         auto re = add<ReLU>(ft);
@@ -67,7 +58,7 @@ struct RiceModel : ChessModel<binpackloader::BinpackLoader> {
 
     static int king_square_index(int kingSquare, uint8_t kingColor) {
         kingSquare = (56 * kingColor) ^ kingSquare;
-        return indices[kingSquare];
+        return FeatureSet::indices[kingSquare];
     }
 
     static int

@@ -27,15 +27,32 @@ void training_with_binpackloader(argparse::ArgumentParser& program,
     const int   lr_drop_epoch             = program.get<int>("--lr-drop-epoch");
     const float lr_drop_ratio             = program.get<float>("--lr-drop-ratio");
     const int   binpackloader_concurrency = program.get<int>("--concurrency");
+    const int   random_fen_skipping       = program.get<int>("--skip");
+    const int   early_fen_skipping        = program.get<int>("--early-skip");
 
     std::cout << "Binpackloader Concurrency: " << binpackloader_concurrency << "\n" << std::endl;
 
-    binpackloader::BinpackLoader train_loader {train_files, batch_size, binpackloader_concurrency};
+    if (random_fen_skipping) {
+        std::cout << "Random FEN Skipping: " << random_fen_skipping << std::endl;
+    } else {
+        std::cout << "Random FEN Skipping: False" << std::endl;
+    }
+    std::cout << "Early FEN Skipping: " << early_fen_skipping << std::endl;
+
+    binpackloader::BinpackLoader train_loader {train_files,
+                                               batch_size,
+                                               binpackloader_concurrency,
+                                               early_fen_skipping,
+                                               random_fen_skipping};
     train_loader.start();
 
     std::optional<binpackloader::BinpackLoader> val_loader;
     if (val_files.size() > 0) {
-        val_loader.emplace(val_files, batch_size, binpackloader_concurrency);
+        val_loader.emplace(val_files,
+                           batch_size,
+                           binpackloader_concurrency,
+                           early_fen_skipping,
+                           random_fen_skipping);
         val_loader->start();
     }
 
@@ -57,61 +74,6 @@ void training_with_binpackloader(argparse::ArgumentParser& program,
     }
 
     model.train(total_epochs, epoch_size, val_epoch_size);
-}
-
-void training_with_grapheus_bin_loader(argparse::ArgumentParser& program,
-                                       std::vector<std::string>& train_files,
-                                       std::vector<std::string>& val_files) {
-
-    const int   total_epochs   = program.get<int>("--epochs");
-    const int   epoch_size     = program.get<int>("--epoch-size");
-    const int   val_epoch_size = program.get<int>("--val-size");
-    const int   save_rate      = program.get<int>("--save-rate");
-    const int   ft_size        = program.get<int>("--ft-size");
-    const float lambda         = program.get<float>("--lambda");
-    const float startlambda    = program.get<float>("--startlambda");
-    const float endlambda      = program.get<float>("--endlambda");
-    const float lr             = program.get<float>("--lr");
-    const int   batch_size     = program.get<int>("--batch-size");
-    const int   lr_drop_epoch  = program.get<int>("--lr-drop-epoch");
-    const float lr_drop_ratio  = program.get<float>("--lr-drop-ratio");
-
-    using DataLoader           = dataset::BatchLoader<chess::Position>;
-
-    DataLoader                train_loader(train_files, batch_size);
-    std::optional<DataLoader> val_loader;
-
-    train_loader.start();
-
-    if (val_files.size() > 0) {
-        val_loader.emplace(val_files, batch_size);
-        val_loader->start();
-    }
-
-    model::BerserkModel model {train_loader, val_loader, ft_size, lambda, save_rate};
-
-    model.set_loss(MPE {2.5, true});
-    model.set_lr_schedule(StepDecayLRSchedule {lr, lr_drop_ratio, lr_drop_epoch});
-
-    auto output_dir = program.get("--output");
-    model.set_file_output(output_dir);
-    for (auto& quantizer : model.m_quantizers)
-        quantizer.set_path(output_dir);
-
-    std::cout << "Files will be saved to " << output_dir << std::endl;
-
-    if (auto previous = program.present("--resume")) {
-        model.load_weights(*previous);
-        std::cout << "Loaded weights from previous " << *previous << std::endl;
-    }
-
-    model.train(total_epochs, epoch_size, val_epoch_size);
-
-    train_loader.kill();
-
-    if (val_loader.has_value()) {
-        val_loader->kill();
-    }
 }
 
 int main(int argc, char* argv[]) {
@@ -176,6 +138,11 @@ int main(int argc, char* argv[]) {
         .default_value(0.025f)
         .help("How much to scale down LR when dropping")
         .scan<'f', float>();
+    program.add_argument("--skip").default_value(0).help("Skip fens randomly").scan<'i', int>();
+    program.add_argument("--early-skip")
+        .default_value(16)
+        .help("Skip fens at the start of the training")
+        .scan<'i', int>();
 
     try {
         program.parse_args(argc, argv);
@@ -279,7 +246,7 @@ int main(int argc, char* argv[]) {
     if (is_binpack) {
         training_with_binpackloader(program, train_files, val_files);
     } else {
-        training_with_grapheus_bin_loader(program, train_files, val_files);
+        std::cerr << "Only binpack files are supported for training" << std::endl;
     }
 
     close();
